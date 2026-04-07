@@ -1,11 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "crates/agent-seal"]
 default-members = [
-  "crates/agent-seal-core",
-  "crates/agent-seal-fingerprint",
-  "crates/agent-seal-launcher",
-  "crates/agent-seal-server",
+  "crates/agent-seal",
 ]
 
 [workspace.dependencies]

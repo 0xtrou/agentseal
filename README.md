@@ -6,45 +6,52 @@
 
 Agent Seal is an encrypted, sandbox-bound agent delivery system for Linux. It compiles agents into sealed payloads, binds decryption to runtime fingerprints, executes from memory, and avoids shipping API keys in delivered binaries.
 
+The primary interface is a single binary, `seal`, with four subcommands:
+
+- `seal compile`: compile and seal an agent payload
+- `seal launch`: launch a sealed agent payload
+- `seal server`: start the orchestration API server
+- `seal proxy`: start the LLM access proxy
+
 ## Architecture
 
 ```text
                               ┌─────────────────────────┐
-                              │  agent-seal-server      │
-                              │  orchestration API      │
+                              │        seal             │
+                              │   single CLI binary     │
                               └──────────┬──────────────┘
                                          │
-                     ┌───────────────────┴───────────────────┐
-                     │                                       │
-         ┌───────────▼───────────┐               ┌──────────▼───────────┐
-         │  agent-seal-compiler  │               │   agent-seal-proxy   │
-         │  compile + seal       │               │   LLM access proxy   │
-         └───────────┬───────────┘               └──────────┬───────────┘
-                     │                                       │
-                     └──────────────┬────────────────────────┘
-                                    │
-                         ┌──────────▼──────────┐
-                         │   agent-seal-core   │
-                         │ crypto + payloads   │
-                         └──────────┬──────────┘
-                                    │
-                         ┌──────────▼───────────────┐
-                         │ agent-seal-fingerprint   │
-                         │ env identity collection  │
-                         └──────────┬───────────────┘
-                                    │
-                         ┌──────────▼──────────┐
-                         │ agent-seal-launcher │
-                         │ decrypt + exec memfd│
-                         └─────────────────────┘
+        ┌────────────────────────────────┼────────────────────────────────┐
+        │                                │                                │
+┌───────▼────────┐             ┌─────────▼────────┐             ┌─────────▼────────┐
+│  seal server   │             │  seal compile    │             │   seal proxy     │
+│ orchestration  │             │ compile + seal   │             │  LLM access      │
+│ API entrypoint │             │ pipeline         │             │  proxy           │
+└───────┬────────┘             └─────────┬────────┘             └─────────┬────────┘
+        │                                │                                │
+        │                      ┌─────────▼────────┐                       │
+        │                      │  seal launch     │                       │
+        │                      │ decrypt + exec   │                       │
+        │                      │ from memfd       │                       │
+        │                      └─────────┬────────┘                       │
+        │                                │                                │
+        └──────────────────────┬─────────▼────────┬───────────────────────┘
+                               │ agent-seal-core  │
+                               │ crypto + payload │
+                               └─────────┬────────┘
+                                         │
+                               ┌─────────▼───────────────┐
+                               │ agent-seal-fingerprint  │
+                               │ env identity collection │
+                               └─────────────────────────┘
 ```
 
 ## How It Works
 
-1. **Compile**: `agent-seal-compiler` turns source projects into Linux executables.
+1. **Compile**: `seal compile` turns source projects into Linux executables and assembles a sealed payload.
 2. **Encrypt**: the artifact is chunk-encrypted with AES-256-GCM and sealed with versioned payload metadata.
 3. **Ship**: launcher + encrypted payload are distributed to target environments.
-4. **Run**: launcher derives runtime keys from fingerprint input and attempts payload decrypt.
+4. **Run**: `seal launch` derives runtime keys from fingerprint input and attempts payload decrypt.
 5. **Capture**: execution output is collected (stdout/stderr/exit code) for orchestration.
 6. **Destroy**: runtime design aims to minimize residual plaintext footprint.
 
@@ -110,12 +117,19 @@ In short: Agent Seal raises attacker cost and narrows abuse windows; it is not a
 
 | Crate | Type | Role |
 |---|---|---|
+| `agent-seal` | bin | Umbrella CLI that provides `seal compile`, `seal launch`, `seal server`, and `seal proxy` |
 | `agent-seal-core` | lib | Shared types, crypto boundaries, payload metadata, derivation primitives |
 | `agent-seal-fingerprint` | lib | Fingerprint collection, canonicalization, mismatch detection |
-| `agent-seal-launcher` | bin | Runtime launcher entrypoint for decrypt + execution flow |
-| `agent-seal-compiler` | lib + bin | Build/seal pipeline, backend adapters (`nuitka`, `pyinstaller`) |
-| `agent-seal-proxy` | lib + bin | LLM provider proxy, auth/rate-limit/routing surface |
-| `agent-seal-server` | bin | Orchestration API that composes compiler + proxy services |
+| `agent-seal-launcher` | bin | Runtime launcher for decrypt and execution flow (Linux only) |
+| `agent-seal-compiler` | lib + bin | Build and seal pipeline, backend adapters (`nuitka`, `pyinstaller`) |
+| `agent-seal-proxy` | lib + bin | LLM provider proxy with auth, rate limiting, and SSE streaming |
+| `agent-seal-server` | bin | Orchestration API that composes compile, dispatch, and job management |
+
+## Installation
+
+```bash
+cargo install --path crates/agent-seal
+```
 
 ## Quick Start
 
@@ -126,58 +140,354 @@ In short: Agent Seal raises attacker cost and narrows abuse windows; it is not a
 - Linux musl linker support (`x86_64-linux-musl-gcc` / `musl-tools`)
 - Optional for CI parity: `cargo-nextest`, `cargo-llvm-cov`
 
-### Build
+### Build from source
 
 ```bash
 cargo build --workspace
 ```
 
-### Demo stubs
+### Compile and seal
 
 ```bash
-cargo run -p agent-seal-launcher -- --payload ./sealed.bin --fingerprint-mode stable
-cargo run -p agent-seal-compiler -- --project ./agent --user-fingerprint u1 --sandbox-fingerprint s1 --output ./out --backend nuitka
-cargo run -p agent-seal-proxy
-cargo run -p agent-seal-server
+seal compile --project ./agent --user-fingerprint u1 --sandbox-fingerprint auto --output ./out --backend nuitka
 ```
 
-All current binaries return a `not implemented` stub response while interfaces stabilize.
+### Launch
+
+```bash
+seal launch --payload ./out/payload.asl --fingerprint-mode stable --user-fingerprint u1 --verbose
+```
+
+### Run orchestration server
+
+```bash
+seal server --bind 0.0.0.0:9090 --compile-dir ./.agent-seal/compile --output-dir ./.agent-seal/output
+```
+
+### Run LLM proxy
+
+```bash
+seal proxy --provider-key "$OPENAI_API_KEY" --provider openai --bind 0.0.0.0:8080
+```
+
+Individual crate binaries are still available for crate-local development, but `seal` is the primary UX.
+
+---
+
+## CLI Reference
+
+### `seal compile` — Build and seal an agent
+
+Compiles a source project into a Linux executable using nuitka or pyinstaller, encrypts it with AES-256-GCM keyed to fingerprints, and assembles a self-contained sealed binary (launcher + payload).
+
+```text
+Usage: seal compile [OPTIONS] --project <PROJECT> --user-fingerprint <USER_FINGERPRINT> --output <OUTPUT>
+Options:
+  --project <PROJECT>              Path to the agent source directory
+  --user-fingerprint <HEX>         64-hex user identity (32 bytes)
+  --sandbox-fingerprint <HEX>      64-hex sandbox identity [default: auto]
+  --output <PATH>                  Output path for the sealed binary
+  --launcher <PATH>                Path to agent-seal-launcher binary (for assembly)
+  --backend <BACKEND>              Compile backend [default: nuitka] (nuitka | pyinstaller)
+```
+
+The `--launcher` flag embeds the launcher binary into the output, producing a single file that contains both the runtime and the encrypted payload. Without it, only the encrypted payload is produced.
+
+**Examples:**
+
+```bash
+# Compile a Python agent into a sealed binary
+seal compile \
+  --project ./my-agent \
+  --user-fingerprint a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 \
+  --sandbox-fingerprint auto \
+  --output ./my-agent.sealed \
+  --launcher ./target/release/agent-seal-launcher \
+  --backend nuitka
+
+# Use pyinstaller backend
+seal compile \
+  --project ./my-agent \
+  --user-fingerprint $USER_FP \
+  --output ./out.sealed \
+  --backend pyinstaller
+
+# Produce only the encrypted payload (no launcher assembly)
+seal compile \
+  --project ./my-agent \
+  --user-fingerprint $USER_FP \
+  --output ./payload.asl
+```
+
+---
+
+### `seal launch` — Execute a sealed agent
+
+Decrypts and executes a sealed payload from memory using memfd + fexecve. Derives decryption keys from the master secret, runtime fingerprint, and user fingerprint. Linux only.
+
+```text
+Usage: seal launch [OPTIONS]
+Options:
+  --payload <PATH>                Path to sealed binary or encrypted payload
+  --fingerprint-mode <MODE>       Fingerprint collection mode [default: stable] (stable | session)
+  --user-fingerprint <HEX>        64-hex user identity (32 bytes) [required]
+  --verbose                       Enable debug-level logging
+```
+
+**Fingerprint modes:**
+- `stable` — Uses only restart-survivable signals (machine-id, hostname, kernel, cgroup). Best for persistent environments.
+- `session` — Includes ephemeral signals (namespace inodes, UIDs). Best for short-lived containers where you want stricter binding.
+
+If `--payload` is omitted or set to `self`, the launcher extracts the embedded payload from its own executable (the assembled binary created by `seal compile --launcher`).
+
+**Examples:**
+
+```bash
+# Run an assembled sealed binary (self-extracting)
+AGENT_SEAL_MASTER_SECRET_HEX=... ./my-agent.sealed --user-fingerprint $FP
+
+# Run via seal launch with explicit payload
+AGENT_SEAL_MASTER_SECRET_HEX=... \
+  seal launch \
+  --payload ./payload.asl \
+  --user-fingerprint $FP \
+  --fingerprint-mode stable \
+  --verbose
+
+# Session mode for ephemeral containers
+AGENT_SEAL_MASTER_SECRET_HEX=... \
+  seal launch \
+  --payload ./payload.asl \
+  --user-fingerprint $FP \
+  --fingerprint-mode session
+```
+
+**Decryption failure** means the runtime fingerprint, user fingerprint, or master secret does not match what was used at compile time. This is by design — the payload is bound to a specific environment.
+
+---
+
+### `seal server` — Orchestration API
+
+Starts the Agent Seal orchestration server. Provides a REST API for compiling agents, dispatching them to Docker sandboxes, and collecting execution results.
+
+```text
+Usage: seal server [OPTIONS]
+Options:
+  --bind <ADDR>                   Listen address [default: 0.0.0.0:9090]
+  --compile-dir <PATH>            Directory for compile artifacts [default: ./.agent-seal/compile]
+  --output-dir <PATH>             Directory for output binaries [default: ./.agent-seal/output]
+```
+
+#### Server API Routes
+
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| GET | `/health` | none | Health check with job count |
+| POST | `/api/v1/compile` | none | Submit a compile job |
+| POST | `/api/v1/dispatch` | none | Dispatch a compiled job to a sandbox |
+| GET | `/api/v1/jobs/{job_id}` | none | Get job status |
+| GET | `/api/v1/jobs/{job_id}/results` | none | Get job execution results |
+
+#### Job Lifecycle
+
+```
+pending -> compiling -> ready -> dispatched -> running -> completed
+                                                    \-> failed (at any stage)
+```
+
+#### `POST /api/v1/compile`
+
+```json
+{
+  "project_dir": "/path/to/agent",
+  "user_fingerprint": "64-hex-string",
+  "sandbox_fingerprint": "64-hex-string"
+}
+```
+
+Response `202 Accepted`:
+```json
+{
+  "job_id": "job-1744032000-1-a1b2c3d4",
+  "status": "pending"
+}
+```
+
+#### `POST /api/v1/dispatch`
+
+```json
+{
+  "job_id": "job-1744032000-1-a1b2c3d4",
+  "sandbox": {
+    "image": "python:3.11-slim",
+    "timeout_secs": 120,
+    "memory_mb": 512,
+    "env": [["AGENT_PROMPT", "What is 2+2?"]]
+  }
+}
+```
+
+Response `202 Accepted`:
+```json
+{
+  "job_id": "job-1744032000-1-a1b2c3d4",
+  "status": "dispatched"
+}
+```
+
+#### `GET /api/v1/jobs/{job_id}/results`
+
+Response `200 OK`:
+```json
+{
+  "job_id": "job-1744032000-1-a1b2c3d4",
+  "status": "completed",
+  "result": {
+    "exit_code": 0,
+    "stdout": "{\"answer\":\"4\",\"mode\":\"standalone\"}\n",
+    "stderr": "[agent] Prompt: What is 2+2?\n[agent] Standalone mode\n[agent] Done\n"
+  }
+}
+```
+
+**Examples:**
+
+```bash
+# Start the server
+seal server --bind 127.0.0.1:9090
+
+# Submit a compile job
+curl -X POST http://127.0.0.1:9090/api/v1/compile \
+  -H 'Content-Type: application/json' \
+  -d '{"project_dir":"./my-agent","user_fingerprint":"...","sandbox_fingerprint":"..."}'
+
+# Poll job status
+curl http://127.0.0.1:9090/api/v1/jobs/job-1744032000-1-a1b2c3d4
+
+# Dispatch to Docker sandbox
+curl -X POST http://127.0.0.1:9090/api/v1/dispatch \
+  -H 'Content-Type: application/json' \
+  -d '{"job_id":"job-...","sandbox":{"image":"python:3.11-slim","timeout_secs":60}}'
+
+# Get execution results
+curl http://127.0.0.1:9090/api/v1/jobs/job-.../results
+```
+
+---
+
+### `seal proxy` — LLM access proxy
+
+Starts an LLM proxy that holds provider API keys server-side. Agents authenticate with virtual keys and never see real credentials. Supports OpenAI and Anthropic providers, SSE streaming, and per-key rate limiting.
+
+```text
+Usage: seal proxy [OPTIONS] --provider-key <PROVIDER_KEY>
+Options:
+  --provider-key <KEY>            Upstream provider API key
+  --provider <NAME>               Provider name [default: openai] (openai | anthropic)
+  --bind <ADDR>                   Listen address [default: 0.0.0.0:8080]
+```
+
+#### Proxy API Routes
+
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| GET | `/health` | none | Health check |
+| POST | `/v1/chat/completions` | virtual key | OpenAI-compatible chat completions |
+| POST | `/admin/keys` | admin token | Create a virtual key |
+| GET | `/admin/keys` | admin token | List all virtual keys |
+| DELETE | `/admin/keys/{key_id}` | admin token | Revoke a virtual key |
+| GET | `/_test/authenticated` | virtual key | Test auth (returns 200 if valid) |
+
+**Admin auth** is via `Authorization: Bearer <AGENT_SEAL_ADMIN_TOKEN>`. Defaults to `dev-admin-token` if not set.
+
+**Virtual key auth** is via `Authorization: Bearer as-...` (keys created via `/admin/keys`).
+
+#### Create a virtual key
+
+```bash
+curl -X POST http://127.0.0.1:8080/admin/keys \
+  -H "Authorization: Bearer $AGENT_SEAL_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"sandbox_id":"my-sandbox","ttl_secs":3600}'
+```
+
+Response `201 Created`:
+```json
+{
+  "id": "vk_a1b2c3d4e5f6a7b8",
+  "key": "as-AbCdEf0123456789..."
+}
+```
+
+The `key` field is the full key — it is only returned once at creation time. Store it securely.
+
+#### Chat completions (compatible with OpenAI SDK)
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer as-AbCdEf0123456789..." \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "stream": false,
+    "max_tokens": 128
+  }'
+```
+
+Streaming works the same way — set `"stream": true` and the proxy forwards the SSE stream from the upstream provider.
+
+**Examples:**
+
+```bash
+# Start proxy with OpenAI
+seal proxy --provider-key "$OPENAI_API_KEY" --provider openai --bind 127.0.0.1:8080
+
+# Start proxy with Anthropic
+seal proxy --provider-key "$ANTHROPIC_API_KEY" --provider anthropic --bind 127.0.0.0:9090
+
+# Create a virtual key for a sandbox
+KEY_RESPONSE=$(curl -s -X POST http://127.0.0.1:8080/admin/keys \
+  -H "Authorization: Bearer $AGENT_SEAL_ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"sandbox_id":"prod-sbx","ttl_secs":86400}')
+VIRTUAL_KEY=$(echo "$KEY_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["key"])')
+
+# Use the virtual key from an agent
+curl -X POST http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer $VIRTUAL_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Say hello"}]}'
+
+# List all keys
+curl -H "Authorization: Bearer $AGENT_SEAL_ADMIN_TOKEN" http://127.0.0.1:8080/admin/keys
+
+# Revoke a key
+curl -X DELETE -H "Authorization: Bearer $AGENT_SEAL_ADMIN_TOKEN" http://127.0.0.1:8080/admin/keys/vk_a1b2c3d4
+```
+
+---
 
 ## Configuration
 
 ### Environment variables
 
-- `RUST_LOG`: tracing level/filter for all binaries
-- `AGENT_SEAL_MASTER_SECRET_HEX`: intended master secret injection point (future)
-- `AGENT_SEAL_PROXY_BASE_URL`: server→proxy routing base URL (future)
-- `AGENT_SEAL_RATE_LIMIT_RPS`: proxy rate limiter configuration (future)
+| Variable | Component | Description |
+|----------|-----------|-------------|
+| `AGENT_SEAL_MASTER_SECRET_HEX` | launch | 64-hex master secret for HKDF key derivation |
+| `AGENT_SEAL_ADMIN_TOKEN` | proxy | Bearer token for admin key management APIs |
+| `AGENT_SEAL_LAUNCHER_PATH` | compile | Path to launcher binary (alternative to `--launcher`) |
+| `AGENT_SEAL_LAUNCHER_SIZE` | launch | Launcher binary size (for self-extraction) |
+| `RUST_LOG` | all | Tracing level/filter (e.g. `debug`, `info`, `agent_seal=trace`) |
 
-### CLI flags
-
-`agent-seal-launcher`:
-
-- `--payload <PATH>`
-- `--fingerprint-mode <stable|session>`
-- `--user-fingerprint <STRING>`
-
-`agent-seal-compiler`:
-
-- `--project <PATH>`
-- `--user-fingerprint <STRING>`
-- `--sandbox-fingerprint <STRING>`
-- `--output <PATH>`
-- `--backend <nuitka|pyinstaller>`
-
-`agent-seal-proxy` / `agent-seal-server`:
-
-- Stub entrypoints today; argument surface will be added with routing/auth/runtime config as implementation lands.
+---
 
 ## Development
 
 ### Format and lint
 
 ```bash
-cargo fmt --all
+cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
@@ -185,16 +495,16 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ```bash
 cargo nextest run --workspace
-cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --fail-under-lines 85
+cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --fail-under-lines 90
 ```
 
 ### CI summary
 
 CI runs on pushes to `main` and pull requests:
 
-- `fmt` (check mode)
-- `clippy` (workspace)
-- `nextest` + `llvm-cov` (85% minimum)
+- `fmt` check
+- `clippy` (all targets)
+- `nextest` + `llvm-cov` (90% minimum)
 - release workspace build
 
 ## License

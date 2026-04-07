@@ -33,6 +33,6 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn self_delete_test_skipped_on_non_linux() {
-        assert!(true);
+        // Self-delete requires Linux /proc/self/exe semantics
     }
 }
