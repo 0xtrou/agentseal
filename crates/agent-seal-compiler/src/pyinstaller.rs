@@ -142,9 +142,19 @@ fn contains_error_indicator(stderr: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).expect("temp dir should be creatable");
+        dir
+    }
+
     #[test]
     fn pyinstaller_missing_binary_returns_compilation_error() {
-        let test_root = std::env::temp_dir().join("agent-seal-pyinstaller-test-missing");
+        let test_root = unique_temp_dir("agent-seal-pyinstaller-test-missing");
         let project_dir = test_root.join("project");
         let output_dir = test_root.join("dist");
         fs::create_dir_all(&project_dir).expect("project dir should be creatable");
@@ -164,6 +174,70 @@ mod tests {
         match err {
             SealError::CompilationError(message) => {
                 assert!(message.contains("not found"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn project_name_returns_filename_for_valid_path() {
+        let name = project_name(Path::new("/tmp/example_project"))
+            .expect("valid project path should return file name");
+        assert_eq!(name, "example_project");
+    }
+
+    #[test]
+    fn project_name_rejects_path_without_filename() {
+        let err = project_name(Path::new("/"))
+            .expect_err("root path should not contain a usable file name");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid project path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn contains_error_indicator_detects_known_patterns() {
+        assert!(contains_error_indicator("Error: fatal"));
+        assert!(contains_error_indicator("error: lower case"));
+        assert!(contains_error_indicator("build FAILED unexpectedly"));
+        assert!(!contains_error_indicator("all good"));
+    }
+
+    #[test]
+    fn run_with_timeout_succeeds_for_fast_command() {
+        let mut command = Command::new("echo");
+        command.arg("hello");
+
+        let output = run_with_timeout(command, 5, "echo")
+            .expect("fast echo command should complete within timeout");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("hello"));
+    }
+
+    #[test]
+    fn compile_with_command_errors_when_main_py_missing() {
+        let test_root = unique_temp_dir("agent-seal-pyinstaller-missing-main");
+        let project_dir = test_root.join("project-no-main");
+        let output_dir = test_root.join("dist");
+        fs::create_dir_all(&project_dir).expect("project dir should be creatable");
+
+        let config = PyInstallerConfig {
+            project_dir: project_dir.clone(),
+            output_dir,
+            onefile: true,
+            timeout_secs: 1,
+        };
+
+        let err = compile_with_command("pyinstaller", &config)
+            .expect_err("missing main.py should return compilation error");
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("missing entrypoint"));
+                assert!(message.contains(&project_dir.join("main.py").display().to_string()));
             }
             other => panic!("unexpected error: {other:?}"),
         }

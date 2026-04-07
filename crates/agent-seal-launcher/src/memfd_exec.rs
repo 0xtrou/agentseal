@@ -436,4 +436,86 @@ mod tests {
         assert_eq!(writes, vec!["write:65536", "write:65536", "write:123"]);
         assert_eq!(executor.ops.read_data().len(), binary.len());
     }
+
+    #[test]
+    fn build_argv_uses_default_when_empty() {
+        let config = ExecConfig {
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+        };
+
+        let argv = build_argv(&config).unwrap();
+        assert_eq!(argv.len(), 1);
+        assert_eq!(argv[0].as_c_str().to_bytes(), b"agent-seal-payload");
+    }
+
+    #[test]
+    fn build_argv_uses_custom_args() {
+        let config = ExecConfig {
+            args: vec!["payload-bin".into(), "--flag".into(), "value".into()],
+            env: Vec::new(),
+            cwd: None,
+        };
+
+        let argv = build_argv(&config).unwrap();
+        let as_bytes: Vec<Vec<u8>> = argv
+            .iter()
+            .map(|arg| arg.as_c_str().to_bytes().to_vec())
+            .collect();
+        assert_eq!(
+            as_bytes,
+            vec![
+                b"payload-bin".to_vec(),
+                b"--flag".to_vec(),
+                b"value".to_vec()
+            ]
+        );
+    }
+
+    #[test]
+    fn build_envp_uses_process_env_when_empty() {
+        let config = ExecConfig {
+            args: Vec::new(),
+            env: Vec::new(),
+            cwd: None,
+        };
+
+        let envp = build_envp(&config).unwrap();
+        assert!(!envp.is_empty());
+        assert!(
+            envp.iter()
+                .all(|entry| entry.as_c_str().to_bytes().contains(&b'='))
+        );
+    }
+
+    #[test]
+    fn build_envp_uses_custom_env() {
+        let config = ExecConfig {
+            args: Vec::new(),
+            env: vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "two".to_string()),
+            ],
+            cwd: None,
+        };
+
+        let envp = build_envp(&config).unwrap();
+        let as_bytes: Vec<Vec<u8>> = envp
+            .iter()
+            .map(|entry| entry.as_c_str().to_bytes().to_vec())
+            .collect();
+        assert_eq!(as_bytes, vec![b"A=1".to_vec(), b"B=two".to_vec()]);
+    }
+
+    #[test]
+    fn read_fd_to_string_reads_pipe_content() {
+        let (read_fd, write_fd) = nix::unistd::pipe().unwrap();
+        let mut writer = std::fs::File::from(write_fd);
+        writer.write_all(b"hello-from-pipe").unwrap();
+        drop(writer);
+
+        let text = read_fd_to_string(read_fd).unwrap();
+        assert_eq!(text, "hello-from-pipe");
+    }
 }

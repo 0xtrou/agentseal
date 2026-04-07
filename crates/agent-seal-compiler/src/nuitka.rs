@@ -160,4 +160,109 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn expected_output_path_uses_bin_for_onefile() {
+        let config = NuitkaConfig {
+            output_dir: PathBuf::from("/tmp/out"),
+            onefile: true,
+            ..NuitkaConfig::default()
+        };
+
+        let path = expected_output_path(&config, "agent");
+        assert_eq!(path, PathBuf::from("/tmp/out/agent.bin"));
+    }
+
+    #[test]
+    fn expected_output_path_uses_dist_layout_for_non_onefile() {
+        let config = NuitkaConfig {
+            output_dir: PathBuf::from("/tmp/out"),
+            onefile: false,
+            ..NuitkaConfig::default()
+        };
+
+        let path = expected_output_path(&config, "agent");
+        assert_eq!(path, PathBuf::from("/tmp/out/agent.dist/agent"));
+    }
+
+    #[test]
+    fn project_name_returns_filename_for_valid_path() {
+        let name = project_name(Path::new("/tmp/example_project"))
+            .expect("valid project path should return file name");
+        assert_eq!(name, "example_project");
+    }
+
+    #[test]
+    fn project_name_rejects_path_without_filename() {
+        let err = project_name(Path::new("/"))
+            .expect_err("root path should not contain a usable file name");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid project path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn project_name_rejects_empty_path() {
+        let err = project_name(Path::new(""))
+            .expect_err("empty path should not contain a usable file name");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid project path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn contains_error_indicator_detects_known_patterns() {
+        assert!(contains_error_indicator("Error: fatal"));
+        assert!(contains_error_indicator("error: lower case"));
+        assert!(contains_error_indicator("build FAILED unexpectedly"));
+        assert!(!contains_error_indicator("all good"));
+    }
+
+    #[test]
+    fn run_with_timeout_succeeds_for_fast_command() {
+        let mut command = Command::new("echo");
+        command.arg("hello");
+
+        let output = run_with_timeout(command, 5, "echo")
+            .expect("fast echo command should complete within timeout");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("hello"));
+    }
+
+    #[test]
+    fn map_spawn_error_maps_not_found_to_compilation_error() {
+        let err = map_spawn_error(
+            std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+            "nuitka",
+        );
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("nuitka not found"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_spawn_error_keeps_other_io_errors() {
+        let err = map_spawn_error(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+            "nuitka",
+        );
+
+        match err {
+            SealError::Io(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

@@ -241,9 +241,20 @@ fn load_master_secret() -> Result<[u8; 32], SealError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+    static TEMP_ID: AtomicU64 = AtomicU64::new(1);
+
+    fn unique_temp_path(stem: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "agent-seal-launcher-{stem}-{}-{}",
+            std::process::id(),
+            TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
 
     #[test]
     fn cli_parses_required_and_optional_args() {
@@ -339,5 +350,217 @@ mod tests {
 
         let err = load_master_secret().expect_err("missing env must fail");
         assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn init_tracing_handles_verbose_false_without_env_filter() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("RUST_LOG");
+        }
+        init_tracing(false);
+    }
+
+    #[test]
+    fn init_tracing_handles_verbose_true_without_env_filter() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("RUST_LOG");
+        }
+        init_tracing(true);
+    }
+
+    #[test]
+    fn init_tracing_prefers_env_filter_when_present() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("RUST_LOG", "warn");
+        }
+        init_tracing(false);
+        unsafe {
+            std::env::remove_var("RUST_LOG");
+        }
+    }
+
+    #[test]
+    fn format_user_error_covers_all_variants() {
+        let cases = vec![
+            (
+                SealError::EncryptionFailed("enc".to_string()),
+                "ERROR: failed to encrypt payload".to_string(),
+            ),
+            (
+                SealError::DecryptionFailed("dec".to_string()),
+                "ERROR: failed to decrypt payload".to_string(),
+            ),
+            (
+                SealError::InvalidPayload("bad".to_string()),
+                "ERROR: invalid payload: bad".to_string(),
+            ),
+            (
+                SealError::UnsupportedPayloadVersion(7),
+                "ERROR: unsupported payload version: 7".to_string(),
+            ),
+            (
+                SealError::TamperDetected,
+                "ERROR: tamper detected".to_string(),
+            ),
+            (
+                SealError::FingerprintMismatch,
+                "ERROR: fingerprint mismatch — sandbox environment has changed".to_string(),
+            ),
+            (
+                SealError::Io(std::io::Error::other("io")),
+                "ERROR: IO failure: io".to_string(),
+            ),
+            (
+                SealError::InvalidInput("input".to_string()),
+                "ERROR: invalid input: input".to_string(),
+            ),
+            (
+                SealError::CompilationError("compile".to_string()),
+                "ERROR: compilation error: compile".to_string(),
+            ),
+            (
+                SealError::CompilationTimeout(42),
+                "ERROR: compilation timeout after 42s".to_string(),
+            ),
+            (
+                SealError::Other(std::io::Error::other("other").into()),
+                "ERROR: other".to_string(),
+            ),
+        ];
+
+        for (err, expected) in cases {
+            assert_eq!(format_user_error(&err), expected);
+        }
+    }
+
+    #[test]
+    fn load_payload_bytes_uses_explicit_path() {
+        let path = unique_temp_path("payload");
+        let payload = b"ASL\x01direct-path".to_vec();
+        std::fs::write(&path, &payload).unwrap();
+
+        let loaded = load_payload_bytes(path.to_str()).unwrap();
+        assert_eq!(loaded, payload);
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn load_payload_bytes_self_and_none_error_on_non_embedded_binary() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("AGENT_SEAL_LAUNCHER_SIZE");
+        }
+
+        let self_result = load_payload_bytes(Some("self"));
+        let none_result = load_payload_bytes(None);
+
+        assert!(matches!(
+            self_result,
+            Err(SealError::Io(_)) | Err(SealError::InvalidInput(_))
+        ));
+        assert!(matches!(
+            none_result,
+            Err(SealError::Io(_)) | Err(SealError::InvalidInput(_))
+        ));
+    }
+
+    #[test]
+    fn extract_payload_from_assembled_binary_rejects_launcher_size_beyond_length() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("AGENT_SEAL_LAUNCHER_SIZE", "100");
+        }
+
+        let assembled = vec![1_u8; 8];
+        let err = extract_payload_from_assembled_binary(&assembled).expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+
+        unsafe {
+            std::env::remove_var("AGENT_SEAL_LAUNCHER_SIZE");
+        }
+    }
+
+    #[test]
+    fn extract_payload_at_launcher_size_skips_sentinel_when_present() {
+        let payload = b"ASL\x01embedded".to_vec();
+        let mut assembled = vec![0xEF; 5];
+        assembled.extend_from_slice(LAUNCHER_PAYLOAD_SENTINEL);
+        assembled.extend_from_slice(&payload);
+
+        let extracted = extract_payload_at_launcher_size(&assembled, 5).unwrap();
+        assert_eq!(extracted, payload);
+    }
+
+    #[test]
+    fn payload_from_offset_rejects_offset_beyond_length() {
+        let bytes = vec![1_u8, 2, 3];
+        let err = payload_from_offset(&bytes, 3).expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn find_marker_returns_expected_results() {
+        let haystack = b"abc123markerxyz";
+        let marker = b"marker";
+        assert_eq!(find_marker(haystack, marker), Some(6));
+        assert_eq!(find_marker(haystack, b"missing"), None);
+    }
+
+    #[test]
+    fn decode_user_fingerprint_errors_when_missing() {
+        let err = decode_user_fingerprint(None).expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn decode_user_fingerprint_errors_on_invalid_hex() {
+        let err = decode_user_fingerprint(Some("not-hex".to_string())).expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn decode_user_fingerprint_errors_on_short_hex() {
+        let err = decode_user_fingerprint(Some("aa".repeat(31))).expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn decode_user_fingerprint_accepts_valid_hex() {
+        let out = decode_user_fingerprint(Some("11".repeat(32))).unwrap();
+        assert_eq!(out, [0x11; 32]);
+    }
+
+    #[test]
+    fn load_master_secret_errors_when_hex_invalid() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("AGENT_SEAL_MASTER_SECRET_HEX", "zzzz");
+        }
+
+        let err = load_master_secret().expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+
+        unsafe {
+            std::env::remove_var("AGENT_SEAL_MASTER_SECRET_HEX");
+        }
+    }
+
+    #[test]
+    fn load_master_secret_errors_when_hex_too_short() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("AGENT_SEAL_MASTER_SECRET_HEX", "aa".repeat(31));
+        }
+
+        let err = load_master_secret().expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+
+        unsafe {
+            std::env::remove_var("AGENT_SEAL_MASTER_SECRET_HEX");
+        }
     }
 }

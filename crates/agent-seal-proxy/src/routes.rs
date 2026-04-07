@@ -258,19 +258,91 @@ fn unix_ts_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::{create_app, state::ProxyState};
+    use std::{
+        collections::HashSet,
+        num::NonZeroU32,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    use agent_seal_core::error::SealError;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
-    use serde_json::Value;
+    use bytes::Bytes;
+    use reqwest::{Client, Proxy};
+    use serde_json::{Value, json};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
     use tower::ServiceExt;
+
+    use super::{AppState, build_router, random_string, unix_ts_secs};
+    use crate::{
+        auth::VirtualKeyAuth,
+        create_app,
+        provider::{ProviderConfig, provider_endpoint, provider_for_model, proxy_request},
+        rate_limit::RateLimitLayer,
+        state::{ProxyState, VirtualKey},
+        stream::stream_response,
+    };
 
     async fn response_json(response: axum::response::Response) -> Value {
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn app_with_valid_key(client: Client, default_provider: &str) -> axum::Router {
+        let mut state = ProxyState::new("provider-key".to_string(), default_provider.to_string());
+        state.http_client = client;
+        state
+            .add_key(VirtualKey::new(
+                "key-1".to_string(),
+                "as-valid",
+                Some("sbx-1".to_string()),
+                1,
+                u64::MAX,
+            ))
+            .await;
+        create_app(state)
+    }
+
+    fn failing_http_client() -> Client {
+        Client::builder()
+            .proxy(Proxy::all("http://127.0.0.1:1").unwrap())
+            .build()
+            .unwrap()
+    }
+
+    async fn spawn_chunked_server(chunks: Vec<Vec<u8>>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request_buf = [0_u8; 1024];
+            let _ = socket.read(&mut request_buf).await;
+
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+
+            for chunk in chunks {
+                let header = format!("{:X}\r\n", chunk.len());
+                socket.write_all(header.as_bytes()).await.unwrap();
+                socket.write_all(&chunk).await.unwrap();
+                socket.write_all(b"\r\n").await.unwrap();
+            }
+
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+        });
+
+        format!("http://{addr}")
     }
 
     #[tokio::test]
@@ -355,7 +427,7 @@ mod tests {
         let created = response_json(create_response).await;
         let key_id = created["id"].as_str().unwrap().to_string();
 
-        let _revoke_response = app
+        let revoke_response = app
             .clone()
             .oneshot(
                 Request::builder()
@@ -367,7 +439,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(_revoke_response.status(), StatusCode::OK);
+        assert_eq!(revoke_response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -389,5 +461,304 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn provider_for_model_routes_expected_models() {
+        let claude = provider_for_model("claude-3-5-sonnet", "openai");
+        assert_eq!(claude.name, "anthropic");
+
+        let gpt = provider_for_model("gpt-4o-mini", "anthropic");
+        assert_eq!(gpt.name, "openai");
+
+        let o1 = provider_for_model("o1-mini", "anthropic");
+        assert_eq!(o1.name, "openai");
+
+        let unknown_openai = provider_for_model("custom-model", "openai");
+        assert_eq!(unknown_openai.name, "openai");
+
+        let unknown_anthropic = provider_for_model("custom-model", "anthropic");
+        assert_eq!(unknown_anthropic.name, "anthropic");
+    }
+
+    #[test]
+    fn provider_endpoint_returns_expected_urls() {
+        assert_eq!(
+            provider_endpoint("anthropic"),
+            "https://api.anthropic.com/v1/messages"
+        );
+        assert_eq!(
+            provider_endpoint("openai"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            provider_endpoint("anything-else"),
+            "https://api.openai.com/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn provider_config_struct_fields_are_accessible() {
+        let config = ProviderConfig {
+            name: "openai".to_string(),
+            base_url: "https://api.openai.com".to_string(),
+            api_key_header: "Authorization".to_string(),
+            models: vec!["gpt-4o-mini".to_string()],
+        };
+
+        assert_eq!(config.name, "openai");
+        assert_eq!(config.base_url, "https://api.openai.com");
+        assert_eq!(config.api_key_header, "Authorization");
+        assert_eq!(config.models, vec!["gpt-4o-mini".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn proxy_request_rejects_invalid_openai_header_value() {
+        let state = ProxyState::new("bad\nkey".to_string(), "openai".to_string());
+        let auth = VirtualKeyAuth {
+            key_id: "key-1".to_string(),
+            sandbox_id: Some("sbx-1".to_string()),
+        };
+
+        let err = proxy_request(
+            &state,
+            &auth,
+            Bytes::from_static(br#"{"model":"gpt-4o-mini"}"#),
+            "gpt-4o-mini",
+        )
+        .await
+        .expect_err("invalid header value should fail before network call");
+
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[tokio::test]
+    async fn proxy_request_rejects_invalid_anthropic_header_value() {
+        let state = ProxyState::new("bad\nkey".to_string(), "anthropic".to_string());
+        let auth = VirtualKeyAuth {
+            key_id: "key-1".to_string(),
+            sandbox_id: Some("sbx-1".to_string()),
+        };
+
+        let err = proxy_request(
+            &state,
+            &auth,
+            Bytes::from_static(br#"{"model":"claude-3-haiku"}"#),
+            "claude-3-haiku",
+        )
+        .await
+        .expect_err("invalid header value should fail before network call");
+
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn random_string_uses_expected_format_and_varies() {
+        let samples: Vec<String> = (0..20).map(|_| random_string(24)).collect();
+        assert!(
+            samples
+                .iter()
+                .all(|s| s.len() == 24 && s.chars().all(|c| c.is_ascii_alphanumeric()))
+        );
+
+        let unique_count = samples.into_iter().collect::<HashSet<_>>().len();
+        assert!(unique_count > 1);
+    }
+
+    #[test]
+    fn unix_ts_secs_is_close_to_current_time() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(Duration::from_secs(0))
+            .as_secs();
+        let ts = unix_ts_secs();
+
+        assert!(ts <= now.saturating_add(2));
+        assert!(ts.saturating_add(2) >= now);
+    }
+
+    #[tokio::test]
+    async fn chat_completions_invalid_json_returns_400() {
+        let app = app_with_valid_key(Client::new(), "openai").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("authorization", "Bearer as-valid")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not-json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            response_json(response).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("invalid json body")
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completions_stream_true_upstream_failure_returns_502() {
+        let app = app_with_valid_key(failing_http_client(), "openai").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("authorization", "Bearer as-valid")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"model":"gpt-4o-mini","messages":[],"stream":true}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(
+            response_json(response).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("upstream stream failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completions_stream_true_with_anthropic_model_upstream_failure_returns_502() {
+        let app = app_with_valid_key(failing_http_client(), "openai").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("authorization", "Bearer as-valid")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"model":"claude-3-haiku","messages":[],"stream":true}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(
+            response_json(response).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("upstream stream failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_completions_stream_false_upstream_failure_returns_502() {
+        let app = app_with_valid_key(failing_http_client(), "openai").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("authorization", "Bearer as-valid")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"model":"gpt-4o-mini","messages":[],"stream":false}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(
+            response_json(response).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("upstream request failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn authenticated_probe_with_valid_key_returns_200() {
+        let app = app_with_valid_key(Client::new(), "openai").await;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/_test/authenticated")
+                    .header("authorization", "Bearer as-valid")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["status"], "authorized");
+    }
+
+    #[tokio::test]
+    async fn build_router_returns_router_that_serves_health() {
+        let app = build_router(AppState {
+            proxy: ProxyState::new("provider-key".to_string(), "openai".to_string()),
+            rate_limit: RateLimitLayer::new(
+                NonZeroU32::new(10).unwrap(),
+                NonZeroU32::new(2).unwrap(),
+            ),
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stream_response_handles_chunk_boundaries_and_empty_lines() {
+        let url =
+            spawn_chunked_server(vec![b"data: one\n\ndata: t".to_vec(), b"wo\n\n".to_vec()]).await;
+        let upstream = reqwest::get(url).await.unwrap();
+        let response = stream_response(upstream).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap(),
+            "text/event-stream"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(&body).unwrap(),
+            "data: one\ndata: two\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_response_flushes_trailing_partial_line() {
+        let url = spawn_chunked_server(vec![b"data: trailing".to_vec()]).await;
+        let upstream = reqwest::get(url).await.unwrap();
+        let response = stream_response(upstream).await;
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(std::str::from_utf8(&body).unwrap(), "data: trailing\n");
     }
 }

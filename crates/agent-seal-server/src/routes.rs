@@ -349,6 +349,9 @@ fn new_job_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::convert::Infallible;
+
+    use agent_seal_core::types::ExecutionResult;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
@@ -356,7 +359,12 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    use crate::{create_app, state::ServerState};
+    use crate::{
+        create_app,
+        state::{JobState, ServerState},
+    };
+
+    use super::{build_router, new_job_id, random_hex_4};
 
     fn test_state() -> ServerState {
         let root = std::env::temp_dir().join("agent-seal-server-tests");
@@ -368,6 +376,18 @@ mod tests {
             .await
             .expect("response bytes should be readable");
         serde_json::from_slice(&body).expect("response must be json")
+    }
+
+    async fn wait_for_status(state: &ServerState, job_id: &str, expected: JobState) {
+        for _ in 0..40 {
+            if let Some(job) = state.get_job(job_id).await
+                && job.status == expected
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        panic!("job did not reach expected status");
     }
 
     #[tokio::test]
@@ -486,6 +506,216 @@ mod tests {
             .expect("dispatch request should complete");
 
         assert_eq!(dispatch_response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn build_router_returns_router() {
+        let _router = build_router(test_state());
+    }
+
+    #[test]
+    fn random_hex_4_returns_eight_hex_chars() {
+        let hex = random_hex_4();
+        assert_eq!(hex.len(), 8);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn new_job_id_has_expected_prefix_and_is_unique() {
+        let first = new_job_id();
+        let second = new_job_id();
+
+        assert!(first.starts_with("job-"));
+        assert!(second.starts_with("job-"));
+        assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn dispatch_missing_job_returns_404() {
+        let app = create_app(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/dispatch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"job_id":"missing","sandbox":{"image":"python:3.11","timeout_secs":30}}"#,
+                    ))
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn dispatch_ready_job_without_output_path_transitions_to_failed() {
+        let state = test_state();
+        let job = state
+            .create_job("job-ready-no-output".to_string(), None)
+            .await;
+        let _: Result<(), Infallible> = state
+            .update_job(&job.id, |job| {
+                job.status = JobState::Ready;
+                job.output_path = None;
+                Ok(())
+            })
+            .await;
+        let app = create_app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/dispatch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        "{{\"job_id\":\"{}\",\"sandbox\":{{\"image\":\"python:3.11\",\"timeout_secs\":30}}}}",
+                        job.id
+                    )))
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        wait_for_status(&state, &job.id, JobState::Failed).await;
+        let updated = state
+            .get_job(&job.id)
+            .await
+            .expect("job should still exist");
+        assert_eq!(updated.error.as_deref(), Some("job has no output artifact"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_ready_job_with_invalid_sandbox_config_fails() {
+        let state = test_state();
+        let job = state
+            .create_job("job-ready-invalid-sandbox".to_string(), None)
+            .await;
+        let _: Result<(), Infallible> = state
+            .update_job(&job.id, |job| {
+                job.status = JobState::Ready;
+                job.output_path = Some("/tmp/irrelevant".to_string());
+                Ok(())
+            })
+            .await;
+        let app = create_app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/dispatch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        "{{\"job_id\":\"{}\",\"sandbox\":{{\"image\":\"invalid image\",\"timeout_secs\":30}}}}",
+                        job.id
+                    )))
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        wait_for_status(&state, &job.id, JobState::Failed).await;
+        let updated = state
+            .get_job(&job.id)
+            .await
+            .expect("job should still exist");
+        assert!(
+            updated
+                .error
+                .as_deref()
+                .expect("job should include error")
+                .contains("sandbox provision failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn get_results_returns_404_for_missing_job() {
+        let app = create_app(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/jobs/missing/results")
+                    .body(Body::empty())
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_results_returns_result_payload_when_job_completed() {
+        let state = test_state();
+        let job = state.create_job("job-with-result".to_string(), None).await;
+        let _: Result<(), Infallible> = state
+            .update_job(&job.id, |job| {
+                job.status = JobState::Completed;
+                job.result = Some(ExecutionResult {
+                    exit_code: 0,
+                    stdout: "ok".to_string(),
+                    stderr: String::new(),
+                });
+                Ok(())
+            })
+            .await;
+        let app = create_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/jobs/{}/results", job.id))
+                    .body(Body::empty())
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["job_id"], "job-with-result");
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["result"]["exit_code"], 0);
+        assert_eq!(payload["result"]["stdout"], "ok");
+    }
+
+    #[tokio::test]
+    async fn get_results_returns_null_result_when_job_has_none() {
+        let state = test_state();
+        let job = state.create_job("job-no-result".to_string(), None).await;
+        let _: Result<(), Infallible> = state
+            .update_job(&job.id, |job| {
+                job.status = JobState::Ready;
+                Ok(())
+            })
+            .await;
+        let app = create_app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/jobs/{}/results", job.id))
+                    .body(Body::empty())
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let payload = response_json(response).await;
+        assert_eq!(payload["job_id"], "job-no-result");
+        assert_eq!(payload["status"], "ready");
+        assert_eq!(payload["result"], serde_json::Value::Null);
     }
 
     #[tokio::test]

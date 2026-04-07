@@ -280,7 +280,135 @@ fn new_sandbox_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{SandboxProvisioner, parse_container_id};
+    use std::{
+        fs,
+        path::Path,
+        process::Command as StdCommand,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use super::{
+        SandboxConfig, SandboxHandle, SandboxProvisioner, find_docker_binary, is_executable,
+        new_sandbox_id, parse_container_id, random_hex_4, unix_ts_millis, validate_sandbox_config,
+    };
+
+    fn temp_path(prefix: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    fn run_env_probe(mode: &str, envs: &[(&str, &str)]) -> std::process::Output {
+        let mut cmd = StdCommand::new(std::env::current_exe().expect("test binary path"));
+        cmd.arg("subprocess_env_probe")
+            .arg("--nocapture")
+            .env("AGENT_SEAL_SANDBOX_TEST_MODE", mode)
+            .env_remove("DOCKER_BIN");
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        cmd.output().expect("subprocess should run")
+    }
+
+    fn fixture_sandbox_config() -> SandboxConfig {
+        SandboxConfig {
+            image: "python:3.11-slim".to_string(),
+            env: vec![("FOO".to_string(), "bar".to_string())],
+            memory_mb: Some(256),
+            timeout_secs: 30,
+        }
+    }
+
+    fn assert_probe_success(output: std::process::Output) {
+        assert!(
+            output.status.success(),
+            "probe failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn subprocess_env_probe() {
+        let Ok(mode) = std::env::var("AGENT_SEAL_SANDBOX_TEST_MODE") else {
+            return;
+        };
+
+        match mode.as_str() {
+            "new_uses_env" => {
+                let expected = std::env::var("AGENT_SEAL_EXPECTED").expect("expected path env");
+                let provisioner = SandboxProvisioner::new();
+                assert_eq!(provisioner.docker_bin_path(), Some(expected.as_str()));
+            }
+            "new_none" => {
+                let provisioner = SandboxProvisioner::new();
+                assert_eq!(provisioner.docker_bin_path(), None);
+            }
+            "find_uses_env" => {
+                let expected = std::env::var("AGENT_SEAL_EXPECTED").expect("expected path env");
+                let found = find_docker_binary();
+                assert_eq!(found.as_deref(), Some(expected.as_str()));
+            }
+            other => panic!("unknown probe mode: {other}"),
+        }
+    }
+
+    #[test]
+    fn sandbox_config_construction_keeps_fields() {
+        let config = fixture_sandbox_config();
+
+        assert_eq!(config.image, "python:3.11-slim");
+        assert_eq!(config.env.len(), 1);
+        assert_eq!(config.env[0].0, "FOO");
+        assert_eq!(config.env[0].1, "bar");
+        assert_eq!(config.memory_mb, Some(256));
+        assert_eq!(config.timeout_secs, 30);
+    }
+
+    #[test]
+    fn sandbox_handle_exposes_expected_fields() {
+        let config = fixture_sandbox_config();
+        let handle = SandboxHandle {
+            id: "sbx-test".to_string(),
+            container_id: Some("container-123".to_string()),
+            config,
+        };
+
+        assert_eq!(handle.id, "sbx-test");
+        assert_eq!(handle.container_id.as_deref(), Some("container-123"));
+        assert_eq!(handle.config.image, "python:3.11-slim");
+        assert_eq!(handle.config.timeout_secs, 30);
+    }
+
+    #[test]
+    fn sandbox_provisioner_new_uses_explicit_docker_bin_env() {
+        let expected = temp_path("docker-bin").to_string_lossy().to_string();
+        let output = run_env_probe(
+            "new_uses_env",
+            &[
+                ("DOCKER_BIN", expected.as_str()),
+                ("AGENT_SEAL_EXPECTED", expected.as_str()),
+            ],
+        );
+
+        assert_probe_success(output);
+    }
+
+    #[test]
+    fn sandbox_provisioner_new_can_have_none_when_env_and_path_missing() {
+        let path_dir = temp_path("empty-path-dir");
+        fs::create_dir_all(&path_dir).expect("temp path dir should be created");
+        let path = path_dir.to_string_lossy().to_string();
+        let output = run_env_probe(
+            "new_none",
+            &[("DOCKER_BIN", "   "), ("PATH", path.as_str())],
+        );
+
+        assert_probe_success(output);
+        fs::remove_dir_all(path_dir).expect("temp path dir should be removed");
+    }
 
     #[test]
     fn parse_container_id_returns_trimmed_value() {
@@ -301,5 +429,152 @@ mod tests {
             .require_docker()
             .expect_err("missing docker should error");
         assert!(err.to_string().contains("docker binary not found"));
+    }
+
+    #[test]
+    fn find_docker_binary_uses_docker_bin_env_when_set() {
+        let expected = temp_path("docker-explicit").to_string_lossy().to_string();
+        let output = run_env_probe(
+            "find_uses_env",
+            &[
+                ("DOCKER_BIN", expected.as_str()),
+                ("AGENT_SEAL_EXPECTED", expected.as_str()),
+            ],
+        );
+
+        assert_probe_success(output);
+    }
+
+    #[test]
+    fn find_docker_binary_discovers_binary_from_path() {
+        let dir = temp_path("sandbox-path-docker");
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let docker_path = dir.join("docker");
+        fs::write(&docker_path, b"#!/bin/sh\nexit 0\n").expect("docker stub should be written");
+        let expected = docker_path.to_string_lossy().to_string();
+
+        let output = run_env_probe(
+            "find_uses_env",
+            &[
+                ("PATH", dir.to_string_lossy().as_ref()),
+                ("AGENT_SEAL_EXPECTED", expected.as_str()),
+            ],
+        );
+        assert_probe_success(output);
+
+        fs::remove_dir_all(dir).expect("temp dir should be cleaned");
+    }
+
+    #[test]
+    fn is_executable_checks_file_presence() {
+        let dir = temp_path("sandbox-executable");
+        fs::create_dir_all(&dir).expect("temp dir should be created");
+        let file = dir.join("docker");
+        fs::write(&file, b"#!/bin/sh\nexit 0\n").expect("temp file should be written");
+
+        assert!(is_executable(Path::new(&file)));
+        assert!(!is_executable(&dir.join("missing")));
+
+        fs::remove_dir_all(dir).expect("temp dir should be cleaned");
+    }
+
+    #[test]
+    fn validate_sandbox_config_accepts_valid_configuration() {
+        let result = validate_sandbox_config(&fixture_sandbox_config());
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn validate_sandbox_config_rejects_empty_or_whitespace_image() {
+        let mut empty_image = fixture_sandbox_config();
+        empty_image.image = "".to_string();
+        let mut whitespace_image = fixture_sandbox_config();
+        whitespace_image.image = "python:3.11 slim".to_string();
+
+        let empty_err = validate_sandbox_config(&empty_image).expect_err("empty image must fail");
+        let whitespace_err =
+            validate_sandbox_config(&whitespace_image).expect_err("whitespace image must fail");
+
+        assert!(
+            empty_err
+                .to_string()
+                .contains("sandbox image must be non-empty")
+        );
+        assert!(
+            whitespace_err
+                .to_string()
+                .contains("sandbox image must be non-empty")
+        );
+    }
+
+    #[test]
+    fn validate_sandbox_config_rejects_invalid_env_key() {
+        let mut config = fixture_sandbox_config();
+        config.env = vec![("BAD-KEY".to_string(), "value".to_string())];
+
+        let err = validate_sandbox_config(&config).expect_err("invalid key must fail");
+
+        assert!(
+            err.to_string()
+                .contains("invalid environment variable key: BAD-KEY")
+        );
+    }
+
+    #[test]
+    fn validate_sandbox_config_rejects_newline_in_env_value() {
+        let mut config = fixture_sandbox_config();
+        config.env = vec![("GOOD_KEY".to_string(), "line1\nline2".to_string())];
+
+        let err = validate_sandbox_config(&config).expect_err("newline value must fail");
+
+        assert!(
+            err.to_string()
+                .contains("invalid environment variable value for key: GOOD_KEY")
+        );
+    }
+
+    #[test]
+    fn unix_ts_millis_returns_currentish_timestamp() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_millis() as u64;
+        let ts = unix_ts_millis();
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_millis() as u64;
+
+        assert!(ts >= before);
+        assert!(ts <= after);
+    }
+
+    #[test]
+    fn random_hex_4_returns_eight_hex_chars() {
+        let hex = random_hex_4();
+        assert_eq!(hex.len(), 8);
+        assert!(hex.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn random_hex_4_produces_distinct_values_across_calls() {
+        let first = random_hex_4();
+        let second = random_hex_4();
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn new_sandbox_id_starts_with_sbx_prefix() {
+        let id = new_sandbox_id();
+        assert!(id.starts_with("sbx-"));
+        assert_eq!(id.split('-').count(), 3);
+    }
+
+    #[test]
+    fn new_sandbox_id_is_unique() {
+        let first = new_sandbox_id();
+        let second = new_sandbox_id();
+        assert_ne!(first, second);
     }
 }

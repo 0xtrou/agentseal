@@ -72,4 +72,41 @@ mod tests {
             other => panic!("expected io error, got {other:?}"),
         }
     }
+
+    #[test]
+    fn verify_tamper_rejects_wrong_hash_length() {
+        let err = verify_tamper(&[0_u8; 31]).expect_err("31-byte hash must be rejected");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("exactly 32 bytes"));
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn verify_tamper_detects_mismatch_on_linux() {
+        let err = verify_tamper(&[0_u8; 32]).expect_err("wrong hash should be detected");
+        assert!(matches!(err, SealError::TamperDetected));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn verify_tamper_accepts_current_binary_hash_on_linux() {
+        let hash = compute_binary_hash().expect("hash should be computed on linux");
+        verify_tamper(&hash).expect("current binary hash should verify");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn verify_tamper_propagates_io_error_on_non_linux() {
+        let err = verify_tamper(&[7_u8; 32]).expect_err("non-linux should propagate io error");
+        match err {
+            SealError::Io(io_err) => {
+                assert!(io_err.to_string().contains("requires Linux"));
+            }
+            other => panic!("expected io error, got {other:?}"),
+        }
+    }
 }
