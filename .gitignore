@@ -1,0 +1,35 @@
+# Build artifacts
+/target/
+**/target/
+
+# Cargo lock is already committed (library/workspace), but ignore if ever needed
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.imdone/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Coverage
+lcov.info
+*.profdata
+*.profraw
+
+# Sealed payloads (generated outputs)
+*.bin
+!crates/**/*.bin
+
+# Compiler output directory
+out/
