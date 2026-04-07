@@ -43,13 +43,9 @@ mod tests {
         // and CI process tracing — only test the non-linux (no-op) path
         #[cfg(target_os = "linux")]
         {
-            // On Linux, just verify the function signature compiles and
-            // the error path works without actually calling ptrace.
-            // The real ptrace call is tested in integration tests.
-            assert!(
-                true,
-                "skipped on linux — ptrace conflicts with instrumentation"
-            );
+            // ptrace::traceme() conflicts with coverage instrumentation
+            // and CI process tracing — skip actual syscall on Linux.
+            // The non-linux (no-op) path is tested below.
             return;
         }
 
