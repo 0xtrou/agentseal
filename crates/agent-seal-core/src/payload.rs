@@ -217,10 +217,7 @@ fn compute_header_hmac(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hmac::{Hmac, Mac};
     use std::io::Cursor;
-
-    type TestHmacSha256 = Hmac<Sha256>;
 
     fn patterned_bytes(len: usize) -> Vec<u8> {
         (0..len).map(|idx| (idx % 241) as u8).collect()

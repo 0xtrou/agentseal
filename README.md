@@ -1,8 +1,8 @@
 # Agent Seal
 
-![Build Status Badge Placeholder](./.github/badges/build-status.svg)
-![Coverage Badge Placeholder](./.github/badges/coverage.svg)
-![Release Badge Placeholder](./.github/badges/release.svg)
+![Build](docs/badges/build-status.svg)
+![Coverage](docs/badges/coverage.svg)
+![Rust](docs/badges/rust-version.svg)
 
 Agent Seal is an encrypted, sandbox-bound agent delivery system for Linux. It compiles agents into sealed payloads, binds decryption to runtime fingerprints, executes from memory, and avoids shipping API keys in delivered binaries.
 
