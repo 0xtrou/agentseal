@@ -217,7 +217,15 @@ fn compute_header_hmac(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
+
+    struct ErrReader;
+
+    impl Read for ErrReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("forced read failure"))
+        }
+    }
 
     fn patterned_bytes(len: usize) -> Vec<u8> {
         (0..len).map(|idx| (idx % 241) as u8).collect()
@@ -299,5 +307,181 @@ mod tests {
 
         assert_eq!(header.magic, MAGIC_BYTES);
         assert_eq!(header.version, VERSION_V1);
+    }
+
+    #[test]
+    fn empty_plaintext_sets_zero_chunk_count() {
+        let key = [52_u8; 32];
+        let payload = pack_payload(Cursor::new(Vec::<u8>::new()), &key).unwrap();
+        let (_decrypted, header) = unpack_payload(Cursor::new(payload), &key).unwrap();
+        assert_eq!(header.chunk_count, 0);
+    }
+
+    #[test]
+    fn exact_chunk_plaintext_sets_chunk_count_one() {
+        let key = [53_u8; 32];
+        let plaintext = patterned_bytes(CHUNK_SIZE);
+        let payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        let (_decrypted, header) = unpack_payload(Cursor::new(payload), &key).unwrap();
+        assert_eq!(header.chunk_count, 1);
+    }
+
+    #[test]
+    fn multi_chunk_plaintext_sets_expected_chunk_count() {
+        let key = [54_u8; 32];
+        let plaintext = patterned_bytes((CHUNK_SIZE * 3) + 1);
+        let payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        let (_decrypted, header) = unpack_payload(Cursor::new(payload), &key).unwrap();
+        assert_eq!(header.chunk_count, 4);
+    }
+
+    #[test]
+    fn unpack_payload_rejects_payload_too_small_for_header() {
+        let key = [55_u8; 32];
+        let err = unpack_payload(Cursor::new(vec![0_u8; HEADER_SIZE - 1]), &key)
+            .expect_err("small payload must fail");
+        assert!(matches!(err, SealError::InvalidPayload(_)));
+    }
+
+    #[test]
+    fn unpack_payload_rejects_encrypted_body_missing_nonce() {
+        let key = [56_u8; 32];
+        let header = PayloadHeader {
+            magic: MAGIC_BYTES,
+            version: VERSION_V1,
+            enc_alg: ENC_ALG_AES256_GCM,
+            fmt_version: FMT_STREAM,
+            chunk_count: 1,
+            header_hmac: compute_header_hmac(
+                &MAGIC_BYTES,
+                VERSION_V1,
+                ENC_ALG_AES256_GCM,
+                FMT_STREAM,
+                1,
+                &key,
+            ),
+        };
+
+        let payload = serialize_header(&header).to_vec();
+        let err = unpack_payload(Cursor::new(payload), &key).expect_err("missing nonce must fail");
+        match err {
+            SealError::InvalidPayload(message) => {
+                assert!(message.contains("missing stream nonce"));
+            }
+            other => panic!("expected invalid payload, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unpack_payload_rejects_tampered_header_hmac() {
+        let key = [57_u8; 32];
+        let plaintext = patterned_bytes(1024);
+        let mut payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        payload[HEADER_SIZE - 1] ^= 0x01;
+
+        let err = unpack_payload(Cursor::new(payload), &key).expect_err("tampered hmac must fail");
+        assert!(matches!(err, SealError::DecryptionFailed(_)));
+    }
+
+    #[test]
+    fn validate_payload_header_rejects_short_data() {
+        let short = [0_u8; HEADER_SIZE - 1];
+        let err = validate_payload_header(&short).expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidPayload(_)));
+    }
+
+    #[test]
+    fn parse_header_rejects_wrong_length() {
+        let short = [0_u8; HEADER_SIZE - 1];
+        let err = parse_header(&short).expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidPayload(_)));
+    }
+
+    #[test]
+    fn parse_header_rejects_invalid_encryption_algorithm() {
+        let key = [58_u8; 32];
+        let plaintext = patterned_bytes(512);
+        let mut payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        payload[6..8].copy_from_slice(&0x9999_u16.to_le_bytes());
+
+        let err =
+            unpack_payload(Cursor::new(payload), &key).expect_err("invalid enc alg must fail");
+        assert!(matches!(err, SealError::InvalidPayload(_)));
+    }
+
+    #[test]
+    fn parse_header_rejects_invalid_format_version() {
+        let key = [59_u8; 32];
+        let plaintext = patterned_bytes(512);
+        let mut payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        payload[8..10].copy_from_slice(&0x7777_u16.to_le_bytes());
+
+        let err = unpack_payload(Cursor::new(payload), &key)
+            .expect_err("invalid format version must fail");
+        assert!(matches!(err, SealError::InvalidPayload(_)));
+    }
+
+    #[test]
+    fn serialize_header_round_trips_with_parse_header() {
+        let header = PayloadHeader {
+            magic: MAGIC_BYTES,
+            version: VERSION_V1,
+            enc_alg: ENC_ALG_AES256_GCM,
+            fmt_version: FMT_STREAM,
+            chunk_count: 9,
+            header_hmac: [0xCD; 32],
+        };
+
+        let serialized = serialize_header(&header);
+        let parsed = parse_header(&serialized).unwrap();
+        assert_eq!(parsed, header);
+    }
+
+    #[test]
+    fn serialize_header_without_hmac_writes_expected_layout() {
+        let bytes = serialize_header_without_hmac(&MAGIC_BYTES, 2, 3, 4, 5);
+
+        assert_eq!(&bytes[0..4], &MAGIC_BYTES);
+        assert_eq!(&bytes[4..6], &2_u16.to_le_bytes());
+        assert_eq!(&bytes[6..8], &3_u16.to_le_bytes());
+        assert_eq!(&bytes[8..10], &4_u16.to_le_bytes());
+        assert_eq!(&bytes[10..14], &5_u32.to_le_bytes());
+    }
+
+    #[test]
+    fn compute_header_hmac_changes_with_chunk_count() {
+        let key = [60_u8; 32];
+        let a = compute_header_hmac(
+            &MAGIC_BYTES,
+            VERSION_V1,
+            ENC_ALG_AES256_GCM,
+            FMT_STREAM,
+            1,
+            &key,
+        );
+        let b = compute_header_hmac(
+            &MAGIC_BYTES,
+            VERSION_V1,
+            ENC_ALG_AES256_GCM,
+            FMT_STREAM,
+            2,
+            &key,
+        );
+
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn pack_payload_propagates_plaintext_read_error() {
+        let key = [61_u8; 32];
+        let err = pack_payload(ErrReader, &key).expect_err("reader failure must propagate");
+        assert!(matches!(err, SealError::Io(_)));
+    }
+
+    #[test]
+    fn unpack_payload_propagates_payload_read_error() {
+        let key = [62_u8; 32];
+        let err = unpack_payload(ErrReader, &key).expect_err("reader failure must propagate");
+        assert!(matches!(err, SealError::Io(_)));
     }
 }

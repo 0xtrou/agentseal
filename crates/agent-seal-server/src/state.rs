@@ -96,8 +96,10 @@ fn unix_ts_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{JobState, ServerState};
-    use agent_seal_core::error::SealError;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{JobState, JobStatus, ServerState, unix_ts_secs};
+    use agent_seal_core::{error::SealError, types::ExecutionResult};
 
     #[tokio::test]
     async fn create_and_get_job() {
@@ -111,6 +113,36 @@ mod tests {
         let fetched = state.get_job("job-1").await.expect("job should exist");
         assert_eq!(fetched.id, "job-1");
         assert_eq!(fetched.project_dir.as_deref(), Some("/agent"));
+    }
+
+    #[tokio::test]
+    async fn server_state_new_keeps_directories_and_starts_empty() {
+        let state = ServerState::new("/tmp/custom-compile".into(), "/tmp/custom-output".into());
+
+        assert_eq!(
+            state.compile_dir,
+            std::path::PathBuf::from("/tmp/custom-compile")
+        );
+        assert_eq!(
+            state.output_dir,
+            std::path::PathBuf::from("/tmp/custom-output")
+        );
+        assert!(state.jobs.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_job_initializes_all_fields() {
+        let state = ServerState::new("/tmp/compile".into(), "/tmp/output".into());
+        let created = state.create_job("job-init".to_string(), None).await;
+
+        assert_eq!(created.id, "job-init");
+        assert_eq!(created.status, JobState::Pending);
+        assert_eq!(created.project_dir, None);
+        assert_eq!(created.output_path, None);
+        assert_eq!(created.error, None);
+        assert_eq!(created.sandbox_id, None);
+        assert!(created.result.is_none());
+        assert!(created.updated_at >= created.created_at);
     }
 
     #[tokio::test]
@@ -135,6 +167,40 @@ mod tests {
             updated.output_path.as_deref(),
             Some("/tmp/output/agent.bin")
         );
+    }
+
+    #[tokio::test]
+    async fn update_job_updates_timestamp_and_allows_complex_changes() {
+        let state = ServerState::new("/tmp/compile".into(), "/tmp/output".into());
+        let created = state
+            .create_job("job-complex".to_string(), Some("/agent".to_string()))
+            .await;
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        state
+            .update_job::<SealError>("job-complex", |job| {
+                job.status = JobState::Completed;
+                job.error = Some("warning".to_string());
+                job.sandbox_id = Some("sbx-123".to_string());
+                job.result = Some(ExecutionResult {
+                    exit_code: 7,
+                    stdout: "out".to_string(),
+                    stderr: "err".to_string(),
+                });
+                Ok(())
+            })
+            .await
+            .expect("update should succeed");
+
+        let updated = state
+            .get_job("job-complex")
+            .await
+            .expect("job should exist");
+        assert_eq!(updated.status, JobState::Completed);
+        assert_eq!(updated.error.as_deref(), Some("warning"));
+        assert_eq!(updated.sandbox_id.as_deref(), Some("sbx-123"));
+        assert_eq!(updated.result.expect("result should exist").exit_code, 7);
+        assert!(updated.updated_at > created.updated_at);
     }
 
     #[tokio::test]
@@ -164,5 +230,52 @@ mod tests {
 
         let persisted = state.get_job("job-3").await.expect("job exists");
         assert_eq!(persisted.status, JobState::Pending);
+    }
+
+    #[test]
+    fn job_status_serializes_and_deserializes() {
+        let job = JobStatus {
+            id: "job-json".to_string(),
+            status: JobState::Failed,
+            project_dir: Some("/agent".to_string()),
+            output_path: Some("/tmp/out".to_string()),
+            error: Some("boom".to_string()),
+            created_at: 10,
+            updated_at: 11,
+            sandbox_id: Some("sbx-9".to_string()),
+            result: Some(ExecutionResult {
+                exit_code: 1,
+                stdout: "stdout".to_string(),
+                stderr: "stderr".to_string(),
+            }),
+        };
+
+        let value = serde_json::to_value(&job).expect("job should serialize");
+        assert_eq!(value["status"], "failed");
+        assert_eq!(value["sandbox_id"], "sbx-9");
+
+        let round_trip: JobStatus = serde_json::from_value(value).expect("job should deserialize");
+        assert_eq!(round_trip.id, "job-json");
+        assert_eq!(round_trip.status, JobState::Failed);
+        assert_eq!(
+            round_trip.result.expect("result should exist").stderr,
+            "stderr"
+        );
+    }
+
+    #[test]
+    fn unix_ts_secs_is_near_current_time() {
+        let before = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_secs();
+        let ts = unix_ts_secs();
+        let after = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time should be after epoch")
+            .as_secs();
+
+        assert!(ts >= before);
+        assert!(ts <= after);
     }
 }

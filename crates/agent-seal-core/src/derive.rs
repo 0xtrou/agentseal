@@ -142,4 +142,44 @@ mod tests {
         out.copy_from_slice(&result);
         out
     }
+
+    #[test]
+    fn derive_session_key_is_deterministic_and_sensitive_to_ephemeral_hash() {
+        let env_key = [7_u8; 32];
+        let eph_a = [8_u8; 32];
+        let eph_b = [9_u8; 32];
+
+        let a1 = derive_session_key(&env_key, &eph_a).unwrap();
+        let a2 = derive_session_key(&env_key, &eph_a).unwrap();
+        let b = derive_session_key(&env_key, &eph_b).unwrap();
+
+        assert_eq!(a1, a2);
+        assert_ne!(a1, b);
+    }
+
+    #[test]
+    fn hkdf_expand_32_is_deterministic_and_sensitive_to_info() {
+        let ikm = [1_u8; 32];
+        let salt = [2_u8; 32];
+
+        let a1 = hkdf_expand_32(&ikm, &salt, b"env").unwrap();
+        let a2 = hkdf_expand_32(&ikm, &salt, b"env").unwrap();
+        let b = hkdf_expand_32(&ikm, &salt, b"session").unwrap();
+
+        assert_eq!(a1, a2);
+        assert_ne!(a1, b);
+    }
+
+    #[test]
+    fn validate_32_accepts_and_rejects_lengths() {
+        validate_32("ok", &[0_u8; 32]).unwrap();
+
+        let err = validate_32("bad", &[0_u8; 31]).expect_err("31-byte value must fail");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("bad must be exactly 32 bytes"))
+            }
+            other => panic!("expected invalid input, got {other:?}"),
+        }
+    }
 }

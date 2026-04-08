@@ -242,4 +242,111 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn default_config_sets_expected_defaults() {
+        let config = PyInstallerConfig::default();
+        assert!(config.project_dir.as_os_str().is_empty());
+        assert!(config.output_dir.as_os_str().is_empty());
+        assert!(config.onefile);
+        assert_eq!(config.timeout_secs, 1_800);
+    }
+
+    #[test]
+    fn compile_with_pyinstaller_surfaces_invalid_project_path() {
+        let config = PyInstallerConfig {
+            project_dir: PathBuf::from("/"),
+            output_dir: unique_temp_dir("agent-seal-pyinstaller-invalid-project"),
+            onefile: true,
+            timeout_secs: 1,
+        };
+
+        let err = compile_with_pyinstaller(&config)
+            .expect_err("invalid project path should fail before command execution");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid project path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_with_timeout_returns_timeout_for_slow_command() {
+        let mut command = Command::new("python3");
+        command.arg("-c").arg("import time; time.sleep(2)");
+
+        let err = run_with_timeout(command, 0, "python3")
+            .expect_err("slow command should time out even when timeout is zero");
+        match err {
+            SealError::CompilationTimeout(timeout) => {
+                assert_eq!(timeout, 0);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_spawn_error_preserves_non_not_found_io_errors() {
+        let err = map_spawn_error(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+            "pyinstaller",
+        );
+
+        match err {
+            SealError::Io(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::PermissionDenied);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_with_command_treats_error_text_as_failure() {
+        let test_root = unique_temp_dir("agent-seal-pyinstaller-error-indicator");
+        let project_dir = test_root.join("project");
+        let output_dir = test_root.join("dist");
+        let fake_pyinstaller = test_root.join("fake-pyinstaller.sh");
+        fs::create_dir_all(&project_dir).expect("project dir should be creatable");
+        fs::write(project_dir.join("main.py"), "print('hello')")
+            .expect("main.py should be writable");
+        fs::write(
+            &fake_pyinstaller,
+            "#!/bin/sh\necho 'Error: simulated pyinstaller failure' >&2\nexit 0\n",
+        )
+        .expect("fake pyinstaller should be writable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_pyinstaller)
+                .expect("fake pyinstaller metadata should be readable")
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_pyinstaller, perms)
+                .expect("fake pyinstaller should be executable");
+        }
+
+        let config = PyInstallerConfig {
+            project_dir,
+            output_dir,
+            onefile: true,
+            timeout_secs: 5,
+        };
+
+        let err = compile_with_command(
+            fake_pyinstaller
+                .to_str()
+                .expect("fake pyinstaller path should be valid utf-8"),
+            &config,
+        )
+        .expect_err("stderr error indicator should be treated as failure");
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("pyinstaller failed"));
+                assert!(message.contains("status=Some(0)"));
+                assert!(message.contains("Error: simulated pyinstaller failure"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

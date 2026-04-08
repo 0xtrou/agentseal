@@ -277,4 +277,94 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    #[test]
+    fn parse_hex_32_accepts_uppercase_hex() {
+        let valid = "AB".repeat(32);
+        let parsed =
+            parse_hex_32(&valid, "user fingerprint").expect("uppercase 64-char hex should parse");
+        assert_eq!(parsed[0], 0xAB);
+    }
+
+    #[test]
+    fn run_rejects_invalid_user_fingerprint_before_compilation() {
+        let cli = Cli {
+            project: PathBuf::from("/tmp/project"),
+            user_fingerprint: "not-hex".to_string(),
+            sandbox_fingerprint: "22".repeat(32),
+            output: std::env::temp_dir().join("agent-seal-output-invalid-user.bin"),
+            backend: CliBackend::Nuitka,
+            launcher: Some(PathBuf::from("/tmp/launcher")),
+        };
+
+        let err =
+            run(cli).expect_err("invalid user fingerprint should fail before backend execution");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid user fingerprint hex"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_rejects_invalid_sandbox_fingerprint_when_not_auto() {
+        let cli = Cli {
+            project: PathBuf::from("/tmp/project"),
+            user_fingerprint: "11".repeat(32),
+            sandbox_fingerprint: "bad-sandbox-hex".to_string(),
+            output: std::env::temp_dir().join("agent-seal-output-invalid-sandbox.bin"),
+            backend: CliBackend::Nuitka,
+            launcher: Some(PathBuf::from("/tmp/launcher")),
+        };
+
+        let err =
+            run(cli).expect_err("invalid sandbox fingerprint should fail when value is not auto");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid sandbox fingerprint hex"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_accepts_auto_sandbox_and_maps_pyinstaller_backend() {
+        let cli = Cli {
+            project: PathBuf::from("/"),
+            user_fingerprint: "11".repeat(32),
+            sandbox_fingerprint: "auto".to_string(),
+            output: std::env::temp_dir().join("agent-seal-output-auto-sandbox.bin"),
+            backend: CliBackend::Pyinstaller,
+            launcher: Some(PathBuf::from("/tmp/launcher")),
+        };
+
+        let err = run(cli).expect_err("compilation should fail for invalid project path");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid project path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_maps_nuitka_backend_and_propagates_compilation_error() {
+        let cli = Cli {
+            project: PathBuf::from("/"),
+            user_fingerprint: "11".repeat(32),
+            sandbox_fingerprint: "22".repeat(32),
+            output: std::env::temp_dir().join("agent-seal-output-nuitka-path.bin"),
+            backend: CliBackend::Nuitka,
+            launcher: Some(PathBuf::from("/tmp/launcher")),
+        };
+
+        let err = run(cli).expect_err("compilation should fail for invalid project path");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid project path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

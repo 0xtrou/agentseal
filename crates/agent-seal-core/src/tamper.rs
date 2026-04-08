@@ -109,4 +109,10 @@ mod tests {
             other => panic!("expected io error, got {other:?}"),
         }
     }
+
+    #[test]
+    fn verify_tamper_rejects_empty_hash_length() {
+        let err = verify_tamper(&[]).expect_err("empty hash must be rejected");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
 }

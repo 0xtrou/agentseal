@@ -729,4 +729,212 @@ mod tests {
         let second = new_sandbox_id();
         assert_ne!(first, second);
     }
+
+    #[test]
+    fn default_matches_new() {
+        let defaulted = SandboxProvisioner::default();
+        let constructed = SandboxProvisioner::new();
+
+        assert_eq!(defaulted.docker_bin_path(), constructed.docker_bin_path());
+    }
+
+    #[test]
+    fn docker_bin_path_exposes_inner_value() {
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some("/tmp/docker".to_string()),
+        };
+
+        assert_eq!(provisioner.docker_bin_path(), Some("/tmp/docker"));
+    }
+
+    #[tokio::test]
+    async fn provision_succeeds_with_stubbed_docker() {
+        let script = make_executable_script("#!/bin/sh\necho container-xyz\n");
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some(script.to_string_lossy().to_string()),
+        };
+
+        let handle = provisioner
+            .provision(&fixture_sandbox_config())
+            .await
+            .expect("provision should succeed");
+
+        assert_eq!(handle.container_id.as_deref(), Some("container-xyz"));
+        assert_eq!(handle.config.image, "python:3.11-slim");
+        assert!(handle.id.starts_with("sbx-"));
+
+        fs::remove_dir_all(script.parent().expect("script parent should exist"))
+            .expect("script temp dir should be removed");
+    }
+
+    #[tokio::test]
+    async fn destroy_without_container_id_is_noop_success() {
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some("/tmp/docker".to_string()),
+        };
+        let handle = SandboxHandle {
+            id: "sbx-test".to_string(),
+            container_id: None,
+            config: fixture_sandbox_config(),
+        };
+
+        provisioner
+            .destroy(&handle)
+            .await
+            .expect("destroy should ignore missing container id");
+    }
+
+    #[tokio::test]
+    async fn collect_fingerprint_requires_docker_binary() {
+        let provisioner = SandboxProvisioner { docker_bin: None };
+
+        let err = provisioner
+            .collect_fingerprint(&fixture_sandbox_handle())
+            .await
+            .expect_err("missing docker should fail fingerprint collection");
+
+        assert!(err.to_string().contains("docker binary not found"));
+    }
+
+    #[tokio::test]
+    async fn collect_fingerprint_returns_docker_snapshot() {
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some("/tmp/docker".to_string()),
+        };
+        let handle = fixture_sandbox_handle();
+
+        let snapshot = provisioner
+            .collect_fingerprint(&handle)
+            .await
+            .expect("fingerprint should be collected");
+
+        assert_eq!(
+            snapshot.runtime,
+            agent_seal_fingerprint::model::RuntimeKind::Docker
+        );
+        assert_eq!(snapshot.stable.len(), 1);
+        assert_eq!(snapshot.stable[0].id, "linux.hostname");
+        assert_eq!(snapshot.stable[0].value, handle.id.as_bytes());
+        assert!(snapshot.ephemeral.is_empty());
+        assert!(snapshot.collected_at_unix_ms > 0);
+    }
+
+    #[tokio::test]
+    async fn copy_into_sandbox_requires_container_id() {
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some("/tmp/docker".to_string()),
+        };
+        let handle = SandboxHandle {
+            id: "sbx-test".to_string(),
+            container_id: None,
+            config: fixture_sandbox_config(),
+        };
+
+        let err = super::copy_into_sandbox(&provisioner, &handle, Path::new("/tmp/a"), "/tmp/b")
+            .await
+            .expect_err("missing container id should fail copy");
+
+        assert!(
+            err.to_string()
+                .contains("sandbox handle has no container id")
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_into_sandbox_runs_docker_cp() {
+        let dir = temp_path("sandbox-copy-success");
+        fs::create_dir_all(&dir).expect("temp dir should exist");
+        let log_path = dir.join("docker.log");
+        let script = dir.join("docker-stub.sh");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\n' \"$*\" >> '{}'\n",
+                log_path.display()
+            ),
+        )
+        .expect("script should be written");
+        let mut perms = fs::metadata(&script)
+            .expect("script metadata should be readable")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).expect("script should be executable");
+        let host_file = dir.join("payload.bin");
+        fs::write(&host_file, b"payload").expect("host file should exist");
+
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some(script.to_string_lossy().to_string()),
+        };
+        let handle = fixture_sandbox_handle();
+
+        super::copy_into_sandbox(&provisioner, &handle, &host_file, "/tmp/agent")
+            .await
+            .expect("copy should succeed");
+
+        let logged = fs::read_to_string(&log_path).expect("log should be readable");
+        assert!(logged.contains("cp"));
+        assert!(logged.contains(host_file.to_string_lossy().as_ref()));
+        assert!(logged.contains("container-123:/tmp/agent"));
+
+        fs::remove_dir_all(dir).expect("temp dir should be removed");
+    }
+
+    #[tokio::test]
+    async fn exec_in_sandbox_requires_container_id() {
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some("/tmp/docker".to_string()),
+        };
+        let handle = SandboxHandle {
+            id: "sbx-test".to_string(),
+            container_id: None,
+            config: fixture_sandbox_config(),
+        };
+
+        let err = exec_in_sandbox(&provisioner, &handle, "echo hi", 1)
+            .await
+            .expect_err("missing container id should fail exec");
+
+        assert!(
+            err.to_string()
+                .contains("sandbox handle has no container id")
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_in_sandbox_returns_execution_result_for_nonzero_exit() {
+        let script = make_executable_script(
+            "#!/bin/sh\nprintf 'hello out'\nprintf 'hello err' 1>&2\nexit 9\n",
+        );
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some(script.to_string_lossy().to_string()),
+        };
+
+        let result = exec_in_sandbox(&provisioner, &fixture_sandbox_handle(), "ignored", 5)
+            .await
+            .expect("exec should succeed even for nonzero exit");
+
+        assert_eq!(result.exit_code, 9);
+        assert_eq!(result.stdout, "hello out");
+        assert_eq!(result.stderr, "hello err");
+
+        fs::remove_dir_all(script.parent().expect("script parent should exist"))
+            .expect("script temp dir should be removed");
+    }
+
+    #[tokio::test]
+    async fn exec_in_sandbox_times_out() {
+        let script = make_executable_script("#!/bin/sh\nsleep 2\n");
+        let provisioner = SandboxProvisioner {
+            docker_bin: Some(script.to_string_lossy().to_string()),
+        };
+
+        let err = exec_in_sandbox(&provisioner, &fixture_sandbox_handle(), "ignored", 0)
+            .await
+            .expect_err("timeout should fail exec");
+
+        assert!(err.to_string().contains("sandbox execution timed out"));
+
+        fs::remove_dir_all(script.parent().expect("script parent should exist"))
+            .expect("script temp dir should be removed");
+    }
 }

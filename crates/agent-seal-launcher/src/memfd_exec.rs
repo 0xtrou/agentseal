@@ -518,4 +518,218 @@ mod tests {
         let text = read_fd_to_string(read_fd).unwrap();
         assert_eq!(text, "hello-from-pipe");
     }
+
+    #[test]
+    fn execute_returns_127_when_cwd_change_fails() {
+        let ops = MockMemfdOps::new();
+        let missing_cwd = std::env::temp_dir().join(format!(
+            "agent-seal-launcher-missing-cwd-{}-{}",
+            std::process::id(),
+            UNIQUE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+
+        let config = ExecConfig {
+            args: vec!["payload-bin".into()],
+            env: vec![("A".into(), "1".into())],
+            cwd: Some(missing_cwd.to_string_lossy().into_owned()),
+        };
+
+        let executor = MemfdExecutor::new(ops);
+        let result = executor.execute(b"payload", &config).unwrap();
+
+        assert_eq!(result.exit_code, 127);
+        assert!(result.stdout.is_empty());
+    }
+
+    struct FailingMemfdOps;
+
+    impl MemfdOps for FailingMemfdOps {
+        fn create_memfd(&self, _name: &str) -> Result<OwnedFd, SealError> {
+            Err(SealError::InvalidInput("boom".to_string()))
+        }
+
+        fn write_chunk(&self, _fd: &OwnedFd, _data: &[u8]) -> Result<(), SealError> {
+            Ok(())
+        }
+
+        fn seal_memfd(&self, _fd: &OwnedFd) -> Result<(), SealError> {
+            Ok(())
+        }
+
+        fn exec_memfd(
+            &self,
+            _fd: impl AsFd,
+            _argv: &[CString],
+            _envp: &[CString],
+        ) -> Result<(), SealError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn execute_returns_127_when_memfd_ops_fail() {
+        let executor = MemfdExecutor::new(FailingMemfdOps);
+        let config = ExecConfig {
+            args: vec!["payload-bin".into()],
+            env: Vec::new(),
+            cwd: None,
+        };
+
+        let result = executor.execute(b"payload", &config).unwrap();
+        assert_eq!(result.exit_code, 127);
+        assert!(result.stdout.is_empty());
+    }
+
+    #[test]
+    fn execute_with_empty_binary_skips_write_chunks() {
+        let ops = MockMemfdOps::new();
+        let config = ExecConfig {
+            args: vec!["payload-bin".into()],
+            env: Vec::new(),
+            cwd: None,
+        };
+
+        let executor = MemfdExecutor::new(ops);
+        let result = executor.execute(&[], &config).unwrap();
+
+        assert_eq!(result.exit_code, 0);
+        let log = executor.ops.read_log();
+        assert!(log.lines().all(|line| !line.starts_with("write:")));
+        assert_eq!(executor.ops.read_data(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn build_argv_rejects_argument_with_nul() {
+        let config = ExecConfig {
+            args: vec!["ok".into(), "bad\0arg".into()],
+            env: Vec::new(),
+            cwd: None,
+        };
+
+        let err = build_argv(&config).expect_err("NUL argument must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn build_envp_rejects_value_with_nul() {
+        let config = ExecConfig {
+            args: Vec::new(),
+            env: vec![
+                ("A".into(), "good".into()),
+                ("B".into(), "bad\0value".into()),
+            ],
+            cwd: None,
+        };
+
+        let err = build_envp(&config).expect_err("NUL env value must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn read_fd_to_string_performs_lossy_utf8_decoding() {
+        let (read_fd, write_fd) = nix::unistd::pipe().unwrap();
+        let mut writer = std::fs::File::from(write_fd);
+        writer.write_all(&[0xf0, 0x28, 0x8c, 0x28]).unwrap();
+        drop(writer);
+
+        let text = read_fd_to_string(read_fd).unwrap();
+        assert!(text.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn extract_exit_code_covers_all_match_arms() {
+        use nix::sys::signal::Signal;
+        use nix::unistd::Pid;
+
+        let pid = Pid::from_raw(1234);
+
+        assert_eq!(extract_exit_code(WaitStatus::Exited(pid, 7)), 7);
+        assert_eq!(
+            extract_exit_code(WaitStatus::Signaled(pid, Signal::SIGKILL, false)),
+            128 + Signal::SIGKILL as i32
+        );
+        assert_eq!(
+            extract_exit_code(WaitStatus::Stopped(pid, Signal::SIGSTOP)),
+            128 + Signal::SIGSTOP as i32
+        );
+        assert_eq!(extract_exit_code(WaitStatus::Continued(pid)), 0);
+        assert_eq!(extract_exit_code(WaitStatus::StillAlive), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_memfd_ops_handles_empty_write_chunk() {
+        let ops = KernelMemfdOps;
+        let fd = ops.create_memfd("agent-seal-test-empty-write").unwrap();
+        ops.write_chunk(&fd, &[]).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_memfd_ops_rejects_non_memfd_in_seal() {
+        let ops = KernelMemfdOps;
+        let file_path = std::env::temp_dir().join(format!(
+            "agent-seal-launcher-non-memfd-{}-{}",
+            std::process::id(),
+            UNIQUE_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&file_path, b"data").unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&file_path)
+            .unwrap();
+        let fd: OwnedFd = file.into();
+
+        let err = ops.seal_memfd(&fd).expect_err("regular file is not memfd");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+
+        std::fs::remove_file(file_path).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn kernel_memfd_ops_exec_memfd_returns_error_for_non_executable_fd() {
+        let ops = KernelMemfdOps;
+        let (read_fd, write_fd) = nix::unistd::pipe().unwrap();
+        drop(write_fd);
+
+        let argv = vec![CString::new("agent-seal-test").unwrap()];
+        let envp = vec![CString::new("A=1").unwrap()];
+        let err = ops
+            .exec_memfd(&read_fd, &argv, &envp)
+            .expect_err("pipe fd cannot be executed");
+        assert!(matches!(err, SealError::Io(_)));
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn kernel_memfd_ops_is_unsupported_on_non_linux() {
+        let ops = KernelMemfdOps;
+
+        let create_err = ops
+            .create_memfd("agent-seal-test")
+            .expect_err("create_memfd must fail on non-linux");
+        assert!(matches!(create_err, SealError::InvalidInput(_)));
+
+        let (read_fd, write_fd) = nix::unistd::pipe().unwrap();
+
+        let write_err = ops
+            .write_chunk(&read_fd, b"x")
+            .expect_err("write_chunk must fail on non-linux");
+        assert!(matches!(write_err, SealError::InvalidInput(_)));
+
+        let seal_err = ops
+            .seal_memfd(&read_fd)
+            .expect_err("seal_memfd must fail on non-linux");
+        assert!(matches!(seal_err, SealError::InvalidInput(_)));
+
+        let exec_err = ops
+            .exec_memfd(&read_fd, &[], &[])
+            .expect_err("exec_memfd must fail on non-linux");
+        assert!(matches!(exec_err, SealError::InvalidInput(_)));
+
+        drop(read_fd);
+        drop(write_fd);
+    }
 }

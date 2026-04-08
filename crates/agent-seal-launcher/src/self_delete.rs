@@ -83,4 +83,17 @@ mod tests {
         let result = map_remove_result(Err(std::io::Error::other("boom")));
         assert!(matches!(result, Err(SealError::Io(_))));
     }
+
+    #[test]
+    fn self_delete_from_path_removes_existing_file() {
+        let path = std::env::temp_dir().join(format!(
+            "agent-seal-launcher-self-delete-file-{}",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"temporary payload").unwrap();
+
+        self_delete_from_path(&path).unwrap();
+
+        assert!(!path.exists());
+    }
 }

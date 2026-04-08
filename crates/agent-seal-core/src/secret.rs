@@ -76,4 +76,17 @@ mod tests {
         assert_eq!(debug, "MasterSecret([REDACTED])");
         assert!(!debug.contains("42"));
     }
+
+    #[test]
+    fn from_slice_accepts_exact_length_and_preserves_bytes() {
+        let bytes = [9_u8; 32];
+        let secret = MasterSecret::from_slice(&bytes).unwrap();
+        assert_eq!(secret.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn from_array_and_as_bytes_round_trip() {
+        let secret = MasterSecret::from([5_u8; 32]);
+        assert_eq!(secret.as_bytes(), &[5_u8; 32]);
+    }
 }

@@ -115,7 +115,10 @@ pub static FINGERPRINT_SOURCES: LazyLock<Vec<FingerprintSourceDef>> = LazyLock::
 
 #[cfg(test)]
 mod tests {
-    use super::{FINGERPRINT_SOURCES, SourceValue, Stability};
+    use super::{
+        FINGERPRINT_SOURCES, FingerprintSnapshot, FingerprintSourceDef, RuntimeKind, SourceValue,
+        Stability,
+    };
 
     #[test]
     fn source_value_round_trip_serialize_deserialize() {
@@ -134,8 +137,118 @@ mod tests {
     }
 
     #[test]
+    fn runtime_kind_all_variants_round_trip_serialize_deserialize() {
+        let variants = [
+            RuntimeKind::Docker,
+            RuntimeKind::Firecracker,
+            RuntimeKind::Gvisor,
+            RuntimeKind::Kata,
+            RuntimeKind::Nspawn,
+            RuntimeKind::GenericLinux,
+            RuntimeKind::Unknown,
+        ];
+
+        for variant in variants {
+            let serialized = serde_json::to_string(&variant).expect("serialize runtime kind");
+            let round_trip: RuntimeKind =
+                serde_json::from_str(&serialized).expect("deserialize runtime kind");
+            assert_eq!(round_trip, variant);
+        }
+    }
+
+    #[test]
+    fn stability_all_variants_round_trip_serialize_deserialize() {
+        let variants = [
+            Stability::Stable,
+            Stability::SemiStable,
+            Stability::Ephemeral,
+        ];
+
+        for variant in variants {
+            let serialized = serde_json::to_string(&variant).expect("serialize stability");
+            let round_trip: Stability =
+                serde_json::from_str(&serialized).expect("deserialize stability");
+            assert_eq!(round_trip, variant);
+        }
+    }
+
+    #[test]
+    fn fingerprint_snapshot_round_trip_serialize_deserialize() {
+        let snapshot = FingerprintSnapshot {
+            runtime: RuntimeKind::Docker,
+            stable: vec![SourceValue {
+                id: "linux.hostname".to_string(),
+                value: b"sandbox-a".to_vec(),
+                confidence: 95,
+                stability: Stability::Stable,
+            }],
+            ephemeral: vec![SourceValue {
+                id: "linux.pid_namespace_inode".to_string(),
+                value: b"4026531836".to_vec(),
+                confidence: 76,
+                stability: Stability::Ephemeral,
+            }],
+            collected_at_unix_ms: 42,
+        };
+
+        let serialized = serde_json::to_string(&snapshot).expect("serialize fingerprint snapshot");
+        let round_trip: FingerprintSnapshot =
+            serde_json::from_str(&serialized).expect("deserialize fingerprint snapshot");
+
+        assert_eq!(round_trip.runtime, RuntimeKind::Docker);
+        assert_eq!(round_trip.stable.len(), 1);
+        assert_eq!(round_trip.ephemeral.len(), 1);
+        assert_eq!(round_trip.collected_at_unix_ms, 42);
+    }
+
+    #[test]
+    fn fingerprint_source_def_serializes_and_deserializes_from_static_json() {
+        let source = FingerprintSourceDef {
+            id: "linux.custom".to_string(),
+            class: Stability::SemiStable,
+            default_on: false,
+            privileged: true,
+            description: "custom source",
+        };
+
+        let serialized = serde_json::to_string(&source).expect("serialize source def");
+        assert!(serialized.contains("\"id\":\"linux.custom\""));
+        assert!(serialized.contains("\"description\":\"custom source\""));
+
+        let static_json = r#"{"id":"linux.static","class":"Stable","default_on":true,"privileged":false,"description":"static source"}"#;
+        let parsed: FingerprintSourceDef =
+            serde_json::from_str(static_json).expect("deserialize source def from static json");
+
+        assert_eq!(parsed.id, "linux.static");
+        assert_eq!(parsed.class, Stability::Stable);
+        assert!(parsed.default_on);
+        assert!(!parsed.privileged);
+        assert_eq!(parsed.description, "static source");
+    }
+
+    #[test]
     fn fingerprint_source_ids_are_owned_strings() {
         assert_eq!(FINGERPRINT_SOURCES[0].id, "linux.machine_id_hmac");
         assert_eq!(FINGERPRINT_SOURCES[1].id, "linux.hostname");
+    }
+
+    #[test]
+    fn fingerprint_sources_include_expected_entries_and_flags() {
+        assert_eq!(FINGERPRINT_SOURCES.len(), 9);
+        assert!(
+            FINGERPRINT_SOURCES
+                .iter()
+                .all(|source| source.default_on && !source.privileged)
+        );
+        assert!(
+            FINGERPRINT_SOURCES
+                .iter()
+                .any(|source| source.class == Stability::Ephemeral)
+        );
+        assert!(
+            FINGERPRINT_SOURCES
+                .iter()
+                .any(|source| source.class == Stability::Stable)
+        );
     }
 }

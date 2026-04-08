@@ -97,4 +97,15 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn shutdown_signal_is_cancellable() {
+        let task = tokio::spawn(super::shutdown_signal());
+        tokio::task::yield_now().await;
+        task.abort();
+        let join_err = task
+            .await
+            .expect_err("aborted task should return join error");
+        assert!(join_err.is_cancelled());
+    }
 }

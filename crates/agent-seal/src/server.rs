@@ -79,6 +79,29 @@ mod tests {
     }
 
     #[test]
+    fn cli_maps_all_server_args() {
+        let parsed = ParseCli::parse_from([
+            "test",
+            "--bind",
+            "127.0.0.1:19090",
+            "--compile-dir",
+            "./custom-compile",
+            "--output-dir",
+            "./custom-output",
+        ]);
+
+        assert_eq!(parsed.cli.bind, "127.0.0.1:19090");
+        assert_eq!(
+            parsed.cli.compile_dir,
+            std::path::PathBuf::from("./custom-compile")
+        );
+        assert_eq!(
+            parsed.cli.output_dir,
+            std::path::PathBuf::from("./custom-output")
+        );
+    }
+
+    #[test]
     fn run_returns_error_for_invalid_bind_address_after_runtime_setup() {
         let base =
             std::env::temp_dir().join(format!("agent-seal-server-test-{}", std::process::id()));
@@ -96,5 +119,16 @@ mod tests {
         assert!(output_dir.exists());
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_is_cancellable() {
+        let task = tokio::spawn(super::shutdown_signal());
+        tokio::task::yield_now().await;
+        task.abort();
+        let join_err = task
+            .await
+            .expect_err("aborted task should return join error");
+        assert!(join_err.is_cancelled());
     }
 }

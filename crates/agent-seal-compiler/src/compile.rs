@@ -296,4 +296,112 @@ mod tests {
         assert_eq!(result, fallback_path);
         assert_eq!(pyinstaller_calls.get(), 1);
     }
+
+    #[test]
+    fn compile_agent_with_backends_uses_pyinstaller_when_requested() {
+        let temp_dir = unique_temp_dir("agent-seal-compile-pyinstaller-success");
+        let output_path = temp_dir.join("pyinstaller.bin");
+        std::fs::copy("/bin/ls", &output_path).expect("binary should be copied");
+
+        let nuitka_calls = std::cell::Cell::new(0_u32);
+        let pyinstaller_calls = std::cell::Cell::new(0_u32);
+        let result = compile_agent_with_backends(
+            &temp_dir,
+            &temp_dir,
+            Backend::PyInstaller,
+            |_project_dir, _output_dir| {
+                nuitka_calls.set(nuitka_calls.get() + 1);
+                Ok(output_path.clone())
+            },
+            |_project_dir, _output_dir| {
+                pyinstaller_calls.set(pyinstaller_calls.get() + 1);
+                Ok(output_path.clone())
+            },
+        )
+        .expect("pyinstaller backend should return output path");
+
+        assert_eq!(result, output_path);
+        assert_eq!(nuitka_calls.get(), 0);
+        assert_eq!(pyinstaller_calls.get(), 1);
+    }
+
+    #[test]
+    fn compile_agent_reports_invalid_project_path_for_nuitka_backend() {
+        let output_dir = unique_temp_dir("agent-seal-compile-direct-nuitka");
+        let err = compile_agent(Path::new("/"), &output_dir, Backend::Nuitka)
+            .expect_err("invalid nuitka project path should fail before spawning commands");
+
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid project path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_agent_reports_missing_entrypoint_for_pyinstaller_backend() {
+        let project_dir = unique_temp_dir("agent-seal-compile-direct-pyinstaller-project");
+        let output_dir = unique_temp_dir("agent-seal-compile-direct-pyinstaller-out");
+        let err = compile_agent(&project_dir, &output_dir, Backend::PyInstaller)
+            .expect_err("missing main.py should fail pyinstaller backend");
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("missing entrypoint"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_strip_returns_io_error_when_strip_is_not_executable() {
+        if std::env::var_os("AGENT_SEAL_TEST_STRIP_PERMISSION_DENIED_CHILD").is_some() {
+            let err = run_strip(Path::new("/bin/ls"))
+                .expect_err("non-executable strip command should return io error");
+            match err {
+                SealError::Io(io) => {
+                    assert_eq!(io.kind(), std::io::ErrorKind::PermissionDenied);
+                }
+                other => panic!("unexpected error: {other:?}"),
+            }
+            return;
+        }
+
+        let path_dir = unique_temp_dir("agent-seal-compile-strip-permission-denied");
+        let fake_strip = path_dir.join("strip");
+        std::fs::write(&fake_strip, "#!/bin/sh\nexit 0\n")
+            .expect("fake strip placeholder should be writable");
+
+        let current_exe = std::env::current_exe().expect("current test binary path should resolve");
+        let output = std::process::Command::new(current_exe)
+            .arg("--exact")
+            .arg("compile::tests::run_strip_returns_io_error_when_strip_is_not_executable")
+            .env("AGENT_SEAL_TEST_STRIP_PERMISSION_DENIED_CHILD", "1")
+            .env("PATH", &path_dir)
+            .output()
+            .expect("child test process should execute");
+
+        assert!(
+            output.status.success(),
+            "child process should pass when strip is permission denied: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn verify_non_empty_returns_io_error_for_missing_path() {
+        let temp_dir = unique_temp_dir("agent-seal-compile-verify-missing");
+        let missing_path = temp_dir.join("missing.bin");
+
+        let err =
+            verify_non_empty(&missing_path).expect_err("missing path should surface io error");
+        match err {
+            SealError::Io(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

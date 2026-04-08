@@ -85,6 +85,8 @@ impl ProxyState {
 
 #[cfg(test)]
 mod tests {
+    use sha2::Digest;
+
     use super::{ProxyState, VirtualKey};
 
     fn test_key(id: &str, plaintext: &str) -> VirtualKey {
@@ -115,6 +117,54 @@ mod tests {
 
         assert!(state.revoke_key("key-1").await);
         assert!(state.get_key("key-1").await.unwrap().revoked);
+    }
+
+    #[test]
+    fn virtual_key_new_sets_prefix_hash_and_metadata() {
+        let key = VirtualKey::new(
+            "key-1".to_string(),
+            "as-1234567890",
+            Some("sbx-1".to_string()),
+            111,
+            222,
+        );
+
+        assert_eq!(key.id, "key-1");
+        assert_eq!(key.key_prefix, "as-12345");
+        assert_eq!(key.sandbox_id.as_deref(), Some("sbx-1"));
+        assert_eq!(key.created_at, 111);
+        assert_eq!(key.expires_at, 222);
+        assert!(!key.revoked);
+        let expected_hash: [u8; 32] = sha2::Sha256::digest("as-1234567890".as_bytes()).into();
+        assert_eq!(key.key_hash, expected_hash);
+    }
+
+    #[test]
+    fn proxy_state_new_sets_provider_fields() {
+        let state = ProxyState::new("provider-key".to_string(), "anthropic".to_string());
+
+        assert_eq!(state.provider_api_key, "provider-key");
+        assert_eq!(state.default_provider, "anthropic");
+    }
+
+    #[tokio::test]
+    async fn get_key_returns_none_for_missing_id() {
+        let state = ProxyState::new("provider-key".to_string(), "openai".to_string());
+
+        assert!(state.get_key("missing").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn all_keys_returns_inserted_keys() {
+        let state = ProxyState::new("provider-key".to_string(), "openai".to_string());
+        state.add_key(test_key("key-1", "as-test-1")).await;
+        state.add_key(test_key("key-2", "as-test-2")).await;
+
+        let keys = state.all_keys().await;
+        let ids: std::collections::HashSet<_> = keys.into_iter().map(|k| k.id).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains("key-1"));
+        assert!(ids.contains("key-2"));
     }
 
     #[tokio::test]

@@ -40,7 +40,15 @@ pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser;
+
     use super::{Cli, CompileBackend, run};
+
+    #[derive(Parser)]
+    struct ParseCli {
+        #[command(flatten)]
+        cli: Cli,
+    }
 
     fn compile_cli(backend: CompileBackend) -> Cli {
         Cli {
@@ -52,6 +60,51 @@ mod tests {
             launcher: None,
             backend,
         }
+    }
+
+    #[test]
+    fn cli_maps_arguments_and_defaults_backend() {
+        let parsed = ParseCli::parse_from([
+            "test",
+            "--project",
+            "./agent",
+            "--user-fingerprint",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--output",
+            "./out.asl",
+        ]);
+
+        assert_eq!(parsed.cli.project, std::path::PathBuf::from("./agent"));
+        assert_eq!(parsed.cli.sandbox_fingerprint, "auto");
+        assert_eq!(parsed.cli.output, std::path::PathBuf::from("./out.asl"));
+        assert_eq!(parsed.cli.launcher, None);
+        assert_eq!(parsed.cli.backend, CompileBackend::Nuitka);
+    }
+
+    #[test]
+    fn cli_maps_optional_launcher_and_pyinstaller_backend() {
+        let parsed = ParseCli::parse_from([
+            "test",
+            "--project",
+            "./agent",
+            "--user-fingerprint",
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "--output",
+            "./out.asl",
+            "--launcher",
+            "./launcher",
+            "--backend",
+            "pyinstaller",
+            "--sandbox-fingerprint",
+            "manual",
+        ]);
+
+        assert_eq!(
+            parsed.cli.launcher,
+            Some(std::path::PathBuf::from("./launcher"))
+        );
+        assert_eq!(parsed.cli.backend, CompileBackend::Pyinstaller);
+        assert_eq!(parsed.cli.sandbox_fingerprint, "manual");
     }
 
     #[test]

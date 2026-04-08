@@ -265,4 +265,162 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn default_config_sets_expected_defaults() {
+        let config = NuitkaConfig::default();
+        assert!(config.project_dir.as_os_str().is_empty());
+        assert!(config.output_dir.as_os_str().is_empty());
+        assert!(config.onefile);
+        assert!(config.standalone);
+        assert!(config.remove_output);
+        assert_eq!(config.timeout_secs, 1_800);
+    }
+
+    #[test]
+    fn compile_with_nuitka_surfaces_invalid_project_path() {
+        let config = NuitkaConfig {
+            project_dir: PathBuf::from("/"),
+            output_dir: PathBuf::from("/tmp/out"),
+            onefile: true,
+            standalone: true,
+            remove_output: true,
+            timeout_secs: 1,
+        };
+
+        let err = compile_with_nuitka(&config)
+            .expect_err("invalid project path should fail before command execution");
+        match err {
+            SealError::InvalidInput(message) => {
+                assert!(message.contains("invalid project path"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_with_timeout_returns_timeout_for_slow_command() {
+        let mut command = Command::new("python3");
+        command.arg("-c").arg("import time; time.sleep(2)");
+
+        let err = run_with_timeout(command, 0, "python3")
+            .expect_err("slow command should time out even when timeout is zero");
+        match err {
+            SealError::CompilationTimeout(timeout) => {
+                assert_eq!(timeout, 0);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_with_command_treats_error_text_as_failure() {
+        let test_root = std::env::temp_dir().join(format!(
+            "agent-seal-nuitka-error-indicator-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&test_root).expect("test root should be creatable");
+
+        let fake_nuitka = test_root.join("fake-nuitka.sh");
+        std::fs::write(
+            &fake_nuitka,
+            "#!/bin/sh\necho 'error: simulated nuitka failure' >&2\nexit 0\n",
+        )
+        .expect("fake nuitka should be writable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake_nuitka)
+                .expect("fake nuitka metadata should be readable")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_nuitka, perms)
+                .expect("fake nuitka should be executable");
+        }
+
+        let config = NuitkaConfig {
+            project_dir: test_root.join("project"),
+            output_dir: test_root.join("out"),
+            onefile: true,
+            standalone: true,
+            remove_output: true,
+            timeout_secs: 5,
+        };
+        std::fs::create_dir_all(&config.project_dir).expect("project dir should be creatable");
+
+        let err = compile_with_command(
+            fake_nuitka
+                .to_str()
+                .expect("fake nuitka path should be valid utf-8"),
+            &config,
+        )
+        .expect_err("stderr error indicator should be treated as failure");
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("nuitka failed"));
+                assert!(message.contains("status=Some(0)"));
+                assert!(message.contains("error: simulated nuitka failure"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_with_command_reports_non_zero_exit_status() {
+        let test_root = std::env::temp_dir().join(format!(
+            "agent-seal-nuitka-non-zero-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&test_root).expect("test root should be creatable");
+
+        let fake_nuitka = test_root.join("fake-nuitka-exit.sh");
+        std::fs::write(&fake_nuitka, "#!/bin/sh\necho 'boom' >&2\nexit 42\n")
+            .expect("fake nuitka should be writable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake_nuitka)
+                .expect("fake nuitka metadata should be readable")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_nuitka, perms)
+                .expect("fake nuitka should be executable");
+        }
+
+        let config = NuitkaConfig {
+            project_dir: test_root.join("project"),
+            output_dir: test_root.join("out"),
+            onefile: false,
+            standalone: false,
+            remove_output: false,
+            timeout_secs: 5,
+        };
+        std::fs::create_dir_all(&config.project_dir).expect("project dir should be creatable");
+
+        let err = compile_with_command(
+            fake_nuitka
+                .to_str()
+                .expect("fake nuitka path should be valid utf-8"),
+            &config,
+        )
+        .expect_err("non-zero status should be treated as failure");
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("nuitka failed"));
+                assert!(message.contains("status=Some(42)"));
+                assert!(message.contains("boom"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

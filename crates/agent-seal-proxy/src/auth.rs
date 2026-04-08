@@ -137,13 +137,22 @@ pub async fn admin_auth_middleware(
 #[cfg(test)]
 mod tests {
     use crate::{
+        auth::{
+            admin_auth_middleware, bearer_token, invalid_admin_response, invalid_key_response,
+            validate_key,
+        },
         create_app,
         state::{ProxyState, VirtualKey},
     };
     use axum::{
+        Router,
         body::Body,
         http::{Request, StatusCode},
+        middleware::from_fn_with_state,
+        response::IntoResponse,
+        routing::get,
     };
+    use sha2::{Digest, Sha256};
     use tower::ServiceExt;
 
     fn build_key(id: &str, plaintext: &str, expires_at: u64, revoked: bool) -> VirtualKey {
@@ -204,6 +213,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn missing_key_returns_401() {
+        let app = create_app(ProxyState::new(
+            "provider-key".to_string(),
+            "openai".to_string(),
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/chat/completions")
+                    .method("POST")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn bearer_token_requires_proper_prefix_and_header() {
+        let req = Request::builder()
+            .header("authorization", "Bearer token-1")
+            .body(Body::empty())
+            .unwrap();
+        let (parts, _) = req.into_parts();
+        assert_eq!(bearer_token(&parts), Some("token-1"));
+
+        let req = Request::builder()
+            .header("authorization", "Basic token-1")
+            .body(Body::empty())
+            .unwrap();
+        let (parts, _) = req.into_parts();
+        assert_eq!(bearer_token(&parts), None);
+
+        let req = Request::builder().body(Body::empty()).unwrap();
+        let (parts, _) = req.into_parts();
+        assert_eq!(bearer_token(&parts), None);
+    }
+
+    #[tokio::test]
+    async fn validate_key_returns_none_for_hash_mismatch() {
+        let state = ProxyState::new("provider-key".to_string(), "openai".to_string());
+        let mut key = build_key("key-1", "as-valid", u64::MAX, false);
+        key.key_hash = Sha256::digest(b"different").into();
+        state.add_key(key).await;
+
+        assert!(validate_key(&state, "as-valid").await.is_none());
+    }
+
+    #[tokio::test]
     async fn expired_key_returns_401() {
         let state = ProxyState::new("provider-key".to_string(), "openai".to_string());
         state
@@ -247,5 +308,69 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn invalid_key_response_has_expected_shape() {
+        let response = invalid_key_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn invalid_admin_response_has_expected_shape() {
+        let response = invalid_admin_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    async fn ok_handler() -> impl IntoResponse {
+        (StatusCode::OK, "ok")
+    }
+
+    #[tokio::test]
+    async fn admin_auth_middleware_rejects_bad_token() {
+        let app = Router::new()
+            .route("/admin", get(ok_handler))
+            .layer(from_fn_with_state(
+                "secret-token".to_string(),
+                admin_auth_middleware,
+            ))
+            .with_state(());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .header("authorization", "Bearer wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_auth_middleware_accepts_good_token() {
+        let app = Router::new()
+            .route("/admin", get(ok_handler))
+            .layer(from_fn_with_state(
+                "secret-token".to_string(),
+                admin_auth_middleware,
+            ))
+            .with_state(());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .header("authorization", "Bearer secret-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

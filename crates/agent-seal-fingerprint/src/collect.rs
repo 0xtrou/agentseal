@@ -371,8 +371,12 @@ fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests {
-    use super::{FingerprintCollector, extract_cgroup_path, normalize_cgroup_path};
-    use crate::model::RuntimeKind;
+    use super::{
+        FingerprintCollector, extract_cgroup_path, filter_cmdline_allowlist, hmac_sha256,
+        is_container_id_segment, normalize_cgroup_path, parse_namespace_inode, read_trimmed_text,
+        sha256,
+    };
+    use crate::model::{RuntimeKind, Stability};
 
     #[test]
     fn collector_returns_snapshot_on_current_platform() {
@@ -395,6 +399,33 @@ mod tests {
     }
 
     #[test]
+    fn collector_default_matches_new() {
+        let from_default = FingerprintCollector::default();
+        let from_new = FingerprintCollector::new();
+
+        assert_eq!(from_default.app_key, from_new.app_key);
+        assert_eq!(from_default.include_mac, from_new.include_mac);
+        assert_eq!(from_default.include_dmi, from_new.include_dmi);
+    }
+
+    #[test]
+    fn with_app_key_sets_key_and_keeps_optional_flags_disabled() {
+        let collector = FingerprintCollector::with_app_key([0xAB; 32]);
+        assert_eq!(collector.app_key, Some([0xAB; 32]));
+        assert!(!collector.include_mac);
+        assert!(!collector.include_dmi);
+    }
+
+    #[test]
+    fn collect_stable_only_has_no_ephemeral_sources() {
+        let collector = FingerprintCollector::new();
+        let snapshot = collector
+            .collect_stable_only()
+            .expect("stable-only collection should succeed");
+        assert!(snapshot.ephemeral.is_empty());
+    }
+
+    #[test]
     fn normalize_cgroup_path_strips_container_id_segments() {
         assert_eq!(
             normalize_cgroup_path("/docker/abc123def4567890/"),
@@ -409,8 +440,171 @@ mod tests {
     }
 
     #[test]
+    fn normalize_cgroup_path_handles_empty_and_mixed_case() {
+        assert_eq!(normalize_cgroup_path(" / "), "/");
+        assert_eq!(
+            normalize_cgroup_path("/USER.SLICE/Session-1.SCOPE"),
+            "/user.slice/session-1.scope"
+        );
+    }
+
+    #[test]
     fn extract_cgroup_path_keeps_structural_prefix() {
         let content = "0::/docker/abc123def4567890\n";
         assert_eq!(extract_cgroup_path(content).as_deref(), Some("/docker"));
+    }
+
+    #[test]
+    fn extract_cgroup_path_prefers_unified_hierarchy_entry() {
+        let content = "12:cpu:/legacy/path\n0::/unified/path/abcdef0123456789\n";
+        assert_eq!(
+            extract_cgroup_path(content).as_deref(),
+            Some("/unified/path")
+        );
+    }
+
+    #[test]
+    fn extract_cgroup_path_falls_back_to_first_non_empty_controller_path() {
+        let content = "9:memory:/mem/path/abcdef0123456789\n11:cpu:\n";
+        assert_eq!(extract_cgroup_path(content).as_deref(), Some("/mem/path"));
+    }
+
+    #[test]
+    fn extract_cgroup_path_returns_none_for_invalid_input() {
+        assert_eq!(extract_cgroup_path(""), None);
+        assert_eq!(extract_cgroup_path("no-colons-here"), None);
+    }
+
+    #[test]
+    fn is_container_id_segment_detects_supported_prefixes() {
+        assert!(is_container_id_segment("abcdef12"));
+        assert!(is_container_id_segment(
+            "docker-abcdef1234567890abcdef1234567890.scope"
+        ));
+        assert!(is_container_id_segment(
+            "containerd-abcdef1234567890abcdef1234567890"
+        ));
+        assert!(is_container_id_segment(
+            "cri-containerd-abcdef1234567890abcdef1234567890"
+        ));
+        assert!(!is_container_id_segment("session-1.scope"));
+        assert!(!is_container_id_segment("g1234567"));
+    }
+
+    #[test]
+    fn filter_cmdline_allowlist_keeps_only_allowlisted_keys() {
+        let filtered = filter_cmdline_allowlist(
+            "ROOT=/dev/sda1 quiet splash panic=1 custom=drop firecracker=1 rw",
+        );
+        assert_eq!(filtered, "root=/dev/sda1 quiet panic=1 firecracker=1 rw");
+    }
+
+    #[test]
+    fn read_trimmed_text_returns_none_for_missing_and_empty_files() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-seal-fingerprint-read-trimmed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root should be creatable");
+
+        let missing = root.join("missing.txt");
+        assert_eq!(
+            read_trimmed_text(missing.to_str().expect("valid utf-8 path")),
+            None
+        );
+
+        let empty = root.join("empty.txt");
+        std::fs::write(&empty, "   \n\t").expect("empty file should be writable");
+        assert_eq!(
+            read_trimmed_text(empty.to_str().expect("valid utf-8 path")),
+            None
+        );
+
+        let value = root.join("value.txt");
+        std::fs::write(&value, "  keep-me  \n").expect("value file should be writable");
+        assert_eq!(
+            read_trimmed_text(value.to_str().expect("valid utf-8 path")).as_deref(),
+            Some("keep-me")
+        );
+    }
+
+    #[test]
+    fn parse_namespace_inode_handles_valid_and_invalid_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-seal-fingerprint-namespace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after unix epoch")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("temp root should be creatable");
+
+        let valid_target = root.join("mnt:[4026532453]");
+        std::fs::write(&valid_target, "x").expect("valid target should be writable");
+        let valid_link = root.join("ns-valid");
+        std::os::unix::fs::symlink(&valid_target, &valid_link)
+            .expect("symlink should be creatable");
+
+        let inode = parse_namespace_inode(valid_link.to_str().expect("valid utf-8 path"));
+        assert_eq!(inode.as_deref(), Some("4026532453"));
+
+        let invalid_target = root.join("no-brackets-here");
+        std::fs::write(&invalid_target, "x").expect("invalid target should be writable");
+        let invalid_link = root.join("ns-invalid");
+        std::os::unix::fs::symlink(&invalid_target, &invalid_link)
+            .expect("invalid symlink should be creatable");
+
+        assert_eq!(
+            parse_namespace_inode(invalid_link.to_str().expect("valid utf-8 path")),
+            None
+        );
+    }
+
+    #[test]
+    fn sha256_and_hmac_sha256_have_expected_digests() {
+        let digest = sha256(b"abc");
+        let expected_sha =
+            hex::decode("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                .expect("known sha256 digest should decode");
+        assert_eq!(digest, expected_sha);
+
+        let hmac = hmac_sha256(b"key", b"The quick brown fox jumps over the lazy dog");
+        let expected_hmac =
+            hex::decode("f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8")
+                .expect("known hmac digest should decode");
+        assert_eq!(hmac.to_vec(), expected_hmac);
+    }
+
+    #[test]
+    fn hmac_sha256_handles_long_keys() {
+        let long_key = vec![0xAB; 100];
+        let digest = hmac_sha256(&long_key, b"data");
+        assert_eq!(digest.len(), 32);
+        assert_ne!(digest, [0_u8; 32]);
+    }
+
+    #[test]
+    fn collector_outputs_expected_stability_values() {
+        let snapshot = FingerprintCollector::new()
+            .collect()
+            .expect("collector should succeed on current platform");
+
+        assert!(
+            snapshot.stable.iter().all(|source| matches!(
+                source.stability,
+                Stability::Stable | Stability::SemiStable
+            ))
+        );
+        assert!(
+            snapshot
+                .ephemeral
+                .iter()
+                .all(|source| source.stability == Stability::Ephemeral)
+        );
     }
 }

@@ -161,4 +161,78 @@ mod tests {
 
         assert_eq!(decrypted, agent_bytes);
     }
+
+    #[test]
+    fn assemble_returns_error_when_launcher_missing_secret_marker() {
+        let root = test_root("missing-secret-marker");
+        std::fs::create_dir_all(&root).expect("test root should be creatable");
+
+        let agent_path = root.join("agent.bin");
+        let launcher_path = root.join("launcher.bin");
+        std::fs::write(&agent_path, [0xAA; 32]).expect("agent bytes should be writable");
+        std::fs::write(&launcher_path, [0xBB; 128]).expect("launcher bytes should be writable");
+
+        let err = assemble(&AssembleConfig {
+            agent_elf_path: agent_path,
+            launcher_path,
+            master_secret: [1_u8; 32],
+            stable_fingerprint_hash: [2_u8; 32],
+            user_fingerprint: [3_u8; 32],
+        })
+        .expect_err("launcher without markers should fail embedding");
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("EmbedFailed: marker not found"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assemble_returns_io_error_for_missing_agent_file() {
+        let root = test_root("missing-agent");
+        std::fs::create_dir_all(&root).expect("test root should be creatable");
+
+        let err = assemble(&AssembleConfig {
+            agent_elf_path: root.join("does-not-exist-agent.bin"),
+            launcher_path: root.join("launcher.bin"),
+            master_secret: [1_u8; 32],
+            stable_fingerprint_hash: [2_u8; 32],
+            user_fingerprint: [3_u8; 32],
+        })
+        .expect_err("missing agent file should surface io error");
+
+        match err {
+            SealError::Io(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assemble_returns_io_error_for_missing_launcher_file() {
+        let root = test_root("missing-launcher");
+        std::fs::create_dir_all(&root).expect("test root should be creatable");
+
+        let agent_path = root.join("agent.bin");
+        std::fs::write(&agent_path, [0xAB; 16]).expect("agent bytes should be writable");
+
+        let err = assemble(&AssembleConfig {
+            agent_elf_path: agent_path,
+            launcher_path: root.join("does-not-exist-launcher.bin"),
+            master_secret: [1_u8; 32],
+            stable_fingerprint_hash: [2_u8; 32],
+            user_fingerprint: [3_u8; 32],
+        })
+        .expect_err("missing launcher file should surface io error");
+
+        match err {
+            SealError::Io(io) => {
+                assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

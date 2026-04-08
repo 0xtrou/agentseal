@@ -114,4 +114,30 @@ mod tests {
             canonicalize_stable(&snapshot_b)
         );
     }
+
+    #[test]
+    fn stable_and_ephemeral_hashes_differ_when_source_sets_differ() {
+        let snapshot = base_snapshot();
+        assert_ne!(
+            canonicalize_stable(&snapshot),
+            canonicalize_ephemeral(&snapshot)
+        );
+    }
+
+    #[test]
+    fn canonicalization_handles_special_characters_and_large_values() {
+        let mut snapshot = base_snapshot();
+        snapshot.stable.push(source(
+            "linux.special_字符",
+            "🔥✨\n\t\0".as_bytes(),
+            Stability::Stable,
+        ));
+        snapshot
+            .stable
+            .push(source("linux.large", &[0x7F; 4096], Stability::SemiStable));
+
+        let first = canonicalize_stable(&snapshot);
+        let second = canonicalize_stable(&snapshot);
+        assert_eq!(first, second);
+    }
 }

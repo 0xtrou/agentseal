@@ -578,4 +578,96 @@ mod tests {
             std::env::remove_var("AGENT_SEAL_MASTER_SECRET_HEX");
         }
     }
+
+    #[test]
+    fn run_returns_io_error_for_missing_payload_path() {
+        let cli = Cli {
+            payload: Some("/definitely/missing/payload.asl".to_string()),
+            fingerprint_mode: FingerprintMode::Stable,
+            user_fingerprint: Some("11".repeat(32)),
+            verbose: false,
+        };
+
+        let err = run(cli).expect_err("missing payload path must fail");
+        assert!(matches!(err, SealError::Io(_)));
+    }
+
+    #[test]
+    fn run_returns_invalid_payload_for_bad_header_before_antidebug() {
+        let payload_path = unique_temp_path("bad-payload");
+        std::fs::write(&payload_path, b"not-a-valid-payload-header").unwrap();
+
+        let cli = Cli {
+            payload: Some(payload_path.to_string_lossy().into_owned()),
+            fingerprint_mode: FingerprintMode::Session,
+            user_fingerprint: Some("22".repeat(32)),
+            verbose: false,
+        };
+
+        let err = run(cli).expect_err("invalid header must fail");
+        assert!(matches!(err, SealError::InvalidPayload(_)));
+
+        std::fs::remove_file(payload_path).unwrap();
+    }
+
+    #[test]
+    fn extract_payload_from_assembled_binary_rejects_invalid_launcher_size_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("AGENT_SEAL_LAUNCHER_SIZE", "not-a-number");
+        }
+
+        let err = extract_payload_from_assembled_binary(b"abc").expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+
+        unsafe {
+            std::env::remove_var("AGENT_SEAL_LAUNCHER_SIZE");
+        }
+    }
+
+    #[test]
+    fn extract_payload_from_assembled_binary_errors_when_marker_missing() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::remove_var("AGENT_SEAL_LAUNCHER_SIZE");
+        }
+
+        let err = extract_payload_from_assembled_binary(b"no-marker-here").expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn extract_payload_at_launcher_size_without_sentinel_uses_offset_directly() {
+        let assembled = b"LAUNCHPAYLOAD".to_vec();
+        let extracted = extract_payload_at_launcher_size(&assembled, 6).unwrap();
+        assert_eq!(extracted, b"PAYLOAD".to_vec());
+    }
+
+    #[test]
+    fn payload_from_offset_returns_trailing_bytes() {
+        let bytes = b"abcdef".to_vec();
+        let payload = payload_from_offset(&bytes, 2).unwrap();
+        assert_eq!(payload, b"cdef".to_vec());
+    }
+
+    #[test]
+    fn decode_user_fingerprint_errors_on_long_hex() {
+        let err = decode_user_fingerprint(Some("aa".repeat(33))).expect_err("must fail");
+        assert!(matches!(err, SealError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn load_master_secret_accepts_valid_hex() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe {
+            std::env::set_var("AGENT_SEAL_MASTER_SECRET_HEX", "ab".repeat(32));
+        }
+
+        let secret = load_master_secret().unwrap();
+        assert_eq!(secret, [0xAB; 32]);
+
+        unsafe {
+            std::env::remove_var("AGENT_SEAL_MASTER_SECRET_HEX");
+        }
+    }
 }

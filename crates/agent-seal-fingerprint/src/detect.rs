@@ -75,4 +75,29 @@ mod tests {
             | RuntimeKind::Unknown => {}
         }
     }
+
+    #[test]
+    fn detect_runtime_honors_container_env_overrides() {
+        if std::env::var_os("AGENT_SEAL_TEST_DETECT_RUNTIME_CHILD").is_some() {
+            let runtime = detect_runtime();
+            assert_eq!(runtime, RuntimeKind::Gvisor);
+            return;
+        }
+
+        let current_exe = std::env::current_exe().expect("current test binary path should resolve");
+        let output = std::process::Command::new(current_exe)
+            .arg("--exact")
+            .arg("detect::tests::detect_runtime_honors_container_env_overrides")
+            .env("AGENT_SEAL_TEST_DETECT_RUNTIME_CHILD", "1")
+            .env("container", "runsc")
+            .output()
+            .expect("child test process should execute");
+
+        assert!(
+            output.status.success(),
+            "child process should pass: stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

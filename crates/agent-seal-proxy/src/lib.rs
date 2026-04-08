@@ -22,3 +22,34 @@ pub fn create_app(state: ProxyState) -> Router {
     };
     build_router(app_state)
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    use super::{ProxyState, create_app};
+
+    #[tokio::test]
+    async fn create_app_serves_health_route() {
+        let app = create_app(ProxyState::new(
+            "provider-key".to_string(),
+            "openai".to_string(),
+        ));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+}

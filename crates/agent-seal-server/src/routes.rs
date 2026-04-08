@@ -737,4 +737,117 @@ mod tests {
         assert_eq!(payload["status"], "ok");
         assert!(payload["jobs_count"].as_u64().is_some());
     }
+
+    #[tokio::test]
+    async fn compile_invalid_json_returns_400() {
+        let app = create_app(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/compile")
+                    .header("content-type", "application/json")
+                    .body(Body::from("not-json"))
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn dispatch_invalid_json_returns_422() {
+        let app = create_app(test_state());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/dispatch")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn compile_missing_project_transitions_job_to_failed() {
+        let state = test_state();
+        let app = create_app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/compile")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"project_dir":"/definitely/missing/project","user_fingerprint":"abcd","sandbox_fingerprint":"auto"}"#,
+                    ))
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = response_json(response).await;
+        let job_id = payload["job_id"].as_str().expect("job id").to_string();
+
+        wait_for_status(&state, &job_id, JobState::Failed).await;
+        let job = state.get_job(&job_id).await.expect("job should exist");
+        assert_eq!(job.status, JobState::Failed);
+        assert!(job.error.is_some());
+    }
+
+    #[tokio::test]
+    async fn compile_fails_when_compile_output_directory_cannot_be_created() {
+        let root = std::env::temp_dir().join(format!(
+            "agent-seal-routes-compile-dir-file-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root dir should be created");
+
+        let compile_dir = root.join("compile-as-file");
+        std::fs::write(&compile_dir, b"not-a-dir").expect("compile file should exist");
+        let output_dir = root.join("output");
+
+        let state = ServerState::new(compile_dir, output_dir);
+        let app = create_app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/compile")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"project_dir":"/tmp/demo-agent","user_fingerprint":"abcd","sandbox_fingerprint":"auto"}"#,
+                    ))
+                    .expect("request must be valid"),
+            )
+            .await
+            .expect("request should complete");
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let payload = response_json(response).await;
+        let job_id = payload["job_id"].as_str().expect("job id").to_string();
+
+        wait_for_status(&state, &job_id, JobState::Failed).await;
+        let job = state.get_job(&job_id).await.expect("job should exist");
+        assert!(
+            job.error
+                .as_deref()
+                .expect("job should include error")
+                .contains("failed to create compile directory")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

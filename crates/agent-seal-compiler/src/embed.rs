@@ -88,6 +88,41 @@ mod tests {
         let err =
             embed_master_secret(&[1_u8; 64], &[2_u8; 32]).expect_err("missing marker should fail");
 
-        assert!(matches!(err, SealError::CompilationError(_)));
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("EmbedFailed: marker not found"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn embed_tamper_hash_returns_error_when_marker_missing() {
+        let err = embed_tamper_hash(&[1_u8; 64], &[3_u8; 32])
+            .expect_err("missing tamper marker should fail");
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("EmbedFailed: marker not found"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn embed_master_secret_returns_error_when_payload_slot_is_too_short() {
+        let mut launcher = vec![0xAA; 16];
+        launcher.extend_from_slice(LAUNCHER_SECRET_MARKER);
+        launcher.extend_from_slice(&[0_u8; 8]);
+
+        let err = embed_master_secret(&launcher, &[0x55_u8; 32])
+            .expect_err("insufficient bytes after marker should fail");
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("EmbedFailed: launcher too small for embedded payload"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
