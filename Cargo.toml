@@ -36,6 +36,7 @@ hex = "0.4"
 bytes = "1"
 futures = "0.3"
 tempfile = "3"
+seccompiler = "0.4"
 
 [workspace.lints.rust]
 missing_docs = "warn"

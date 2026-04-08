@@ -1,74 +1,35 @@
-use crate::{
-    nuitka::{NuitkaConfig, compile_with_nuitka},
-    pyinstaller::{PyInstallerConfig, compile_with_pyinstaller},
+use crate::backend::{
+    ChainBackend, CompileBackend, CompileConfig, GoBackend, NuitkaBackend, PyInstallerBackend,
 };
 use agent_seal_core::error::SealError;
 use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use tracing::warn;
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Backend {
-    Nuitka,
-    PyInstaller,
+pub fn compile_agent(project_dir: &Path, output_dir: &Path) -> Result<PathBuf, SealError> {
+    let backend = ChainBackend::new(vec![
+        Box::new(NuitkaBackend),
+        Box::new(PyInstallerBackend),
+        Box::new(GoBackend),
+    ]);
+    compile_agent_with_backend(project_dir, output_dir, &backend)
 }
 
-pub fn compile_agent(
+pub fn compile_agent_with_backend(
     project_dir: &Path,
     output_dir: &Path,
-    backend: Backend,
+    backend: &dyn CompileBackend,
 ) -> Result<PathBuf, SealError> {
-    compile_agent_with_backends(
-        project_dir,
-        output_dir,
-        backend,
-        |project_dir, output_dir| {
-            let nuitka_cfg = NuitkaConfig {
-                project_dir: project_dir.to_path_buf(),
-                output_dir: output_dir.to_path_buf(),
-                ..NuitkaConfig::default()
-            };
-            compile_with_nuitka(&nuitka_cfg)
-        },
-        |project_dir, output_dir| {
-            let pyinstaller_cfg = PyInstallerConfig {
-                project_dir: project_dir.to_path_buf(),
-                output_dir: output_dir.to_path_buf(),
-                onefile: true,
-                timeout_secs: 1_800,
-            };
-            compile_with_pyinstaller(&pyinstaller_cfg)
-        },
-    )
-}
-
-fn compile_agent_with_backends<FN, FP>(
-    project_dir: &Path,
-    output_dir: &Path,
-    backend: Backend,
-    compile_nuitka: FN,
-    compile_pyinstaller: FP,
-) -> Result<PathBuf, SealError>
-where
-    FN: Fn(&Path, &Path) -> Result<PathBuf, SealError>,
-    FP: Fn(&Path, &Path) -> Result<PathBuf, SealError>,
-{
-    let output = match backend {
-        Backend::Nuitka => match compile_nuitka(project_dir, output_dir) {
-            Ok(path) => path,
-            Err(_nuitka_err) => {
-                warn!("nuitka compilation failed, falling back to pyinstaller: {_nuitka_err}");
-                compile_pyinstaller(project_dir, output_dir)?
-            }
-        },
-        Backend::PyInstaller => compile_pyinstaller(project_dir, output_dir)?,
+    let config = CompileConfig {
+        project_dir: project_dir.to_path_buf(),
+        output_dir: output_dir.to_path_buf(),
+        target_triple: "x86_64-unknown-linux-musl".to_string(),
+        timeout_secs: 1_800,
     };
-
+    let output = backend.compile(&config)?;
     run_strip(&output)?;
     verify_non_empty(&output)?;
-
     Ok(output)
 }
 
@@ -112,39 +73,33 @@ fn verify_non_empty(binary_path: &Path) -> Result<(), SealError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::CompileConfig;
 
-    #[test]
-    fn backend_variants_compare_as_expected() {
-        assert_eq!(Backend::Nuitka, Backend::Nuitka);
-        assert_eq!(Backend::PyInstaller, Backend::PyInstaller);
-        assert_ne!(Backend::Nuitka, Backend::PyInstaller);
+    struct TestBackend {
+        name: &'static str,
+        output: Option<PathBuf>,
+        error: Option<&'static str>,
     }
 
-    #[test]
-    fn compile_agent_returns_error_when_no_backend_available() {
-        let project_dir = PathBuf::from("/tmp/project");
-        let output_dir = std::env::temp_dir().join("agent-seal-compile-no-backend-test");
+    impl CompileBackend for TestBackend {
+        fn name(&self) -> &str {
+            self.name
+        }
 
-        let err = compile_agent_with_backends(
-            &project_dir,
-            &output_dir,
-            Backend::Nuitka,
-            |_project_dir, _output_dir| {
-                Err(SealError::CompilationError("nuitka not found".to_string()))
-            },
-            |_project_dir, _output_dir| {
+        fn can_compile(&self, _project_dir: &Path) -> bool {
+            true
+        }
+
+        fn compile(&self, _config: &CompileConfig) -> Result<PathBuf, SealError> {
+            if let Some(output) = &self.output {
+                Ok(output.clone())
+            } else {
                 Err(SealError::CompilationError(
-                    "pyinstaller not found".to_string(),
+                    self.error
+                        .expect("test backend error should exist")
+                        .to_string(),
                 ))
-            },
-        )
-        .expect_err("both backend failures should bubble up as error");
-
-        match err {
-            SealError::CompilationError(message) => {
-                assert!(message.contains("pyinstaller not found"));
             }
-            other => panic!("unexpected error: {other:?}"),
         }
     }
 
@@ -156,6 +111,58 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir should be creatable");
         dir
+    }
+
+    #[test]
+    fn compile_agent_with_backend_propagates_backend_errors() {
+        let backend = TestBackend {
+            name: "failing",
+            output: None,
+            error: Some("backend failed"),
+        };
+
+        let err =
+            compile_agent_with_backend(Path::new("/tmp/project"), Path::new("/tmp/out"), &backend)
+                .expect_err("backend error should be returned");
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("backend failed"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compile_agent_with_backend_accepts_non_empty_output() {
+        let temp_dir = unique_temp_dir("agent-seal-compile-backend-success");
+        let output_path = temp_dir.join("compiled.bin");
+        std::fs::copy("/bin/ls", &output_path).expect("binary should be copied");
+
+        let backend = TestBackend {
+            name: "success",
+            output: Some(output_path.clone()),
+            error: None,
+        };
+
+        let result = compile_agent_with_backend(&temp_dir, &temp_dir, &backend)
+            .expect("backend output should pass strip and non-empty checks");
+        assert_eq!(result, output_path);
+    }
+
+    #[test]
+    fn compile_agent_auto_reports_invalid_project_path_for_default_chain() {
+        let output_dir = unique_temp_dir("agent-seal-compile-chain-invalid-project");
+        let err = compile_agent(Path::new("/"), &output_dir)
+            .expect_err("invalid project should fail across default chain");
+
+        match err {
+            SealError::CompilationError(message) => {
+                assert!(message.contains("no backend could compile project"));
+                assert!(message.contains("/"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]
@@ -245,113 +252,6 @@ mod tests {
         std::fs::write(&binary_path, b"abc").expect("non-empty test file should be writable");
 
         verify_non_empty(&binary_path).expect("non-empty file should be accepted");
-    }
-
-    #[test]
-    fn compile_agent_with_backends_uses_nuitka_output_when_successful() {
-        let temp_dir = unique_temp_dir("agent-seal-compile-nuitka-success");
-        let output_path = temp_dir.join("nuitka.bin");
-        std::fs::copy("/bin/ls", &output_path).expect("binary should be copied");
-
-        let pyinstaller_calls = std::cell::Cell::new(0_u32);
-        let result = compile_agent_with_backends(
-            &temp_dir,
-            &temp_dir,
-            Backend::Nuitka,
-            |_project_dir, _output_dir| Ok(output_path.clone()),
-            |_project_dir, _output_dir| {
-                pyinstaller_calls.set(pyinstaller_calls.get() + 1);
-                Err(SealError::CompilationError(
-                    "fallback should not run".to_string(),
-                ))
-            },
-        )
-        .expect("nuitka success should return output path");
-
-        assert_eq!(result, output_path);
-        assert_eq!(pyinstaller_calls.get(), 0);
-    }
-
-    #[test]
-    fn compile_agent_with_backends_falls_back_to_pyinstaller_after_nuitka_failure() {
-        let temp_dir = unique_temp_dir("agent-seal-compile-fallback");
-        let fallback_path = temp_dir.join("fallback.bin");
-        std::fs::copy("/bin/ls", &fallback_path).expect("binary should be copied");
-
-        let pyinstaller_calls = std::cell::Cell::new(0_u32);
-        let result = compile_agent_with_backends(
-            &temp_dir,
-            &temp_dir,
-            Backend::Nuitka,
-            |_project_dir, _output_dir| {
-                Err(SealError::CompilationError("nuitka failed".to_string()))
-            },
-            |_project_dir, _output_dir| {
-                pyinstaller_calls.set(pyinstaller_calls.get() + 1);
-                Ok(fallback_path.clone())
-            },
-        )
-        .expect("fallback pyinstaller output should be returned");
-
-        assert_eq!(result, fallback_path);
-        assert_eq!(pyinstaller_calls.get(), 1);
-    }
-
-    #[test]
-    fn compile_agent_with_backends_uses_pyinstaller_when_requested() {
-        let temp_dir = unique_temp_dir("agent-seal-compile-pyinstaller-success");
-        let output_path = temp_dir.join("pyinstaller.bin");
-        std::fs::copy("/bin/ls", &output_path).expect("binary should be copied");
-
-        let nuitka_calls = std::cell::Cell::new(0_u32);
-        let pyinstaller_calls = std::cell::Cell::new(0_u32);
-        let result = compile_agent_with_backends(
-            &temp_dir,
-            &temp_dir,
-            Backend::PyInstaller,
-            |_project_dir, _output_dir| {
-                nuitka_calls.set(nuitka_calls.get() + 1);
-                Ok(output_path.clone())
-            },
-            |_project_dir, _output_dir| {
-                pyinstaller_calls.set(pyinstaller_calls.get() + 1);
-                Ok(output_path.clone())
-            },
-        )
-        .expect("pyinstaller backend should return output path");
-
-        assert_eq!(result, output_path);
-        assert_eq!(nuitka_calls.get(), 0);
-        assert_eq!(pyinstaller_calls.get(), 1);
-    }
-
-    #[test]
-    fn compile_agent_reports_invalid_project_path_for_nuitka_backend() {
-        let output_dir = unique_temp_dir("agent-seal-compile-direct-nuitka");
-        let err = compile_agent(Path::new("/"), &output_dir, Backend::Nuitka)
-            .expect_err("invalid nuitka project path should fail before spawning commands");
-
-        match err {
-            SealError::InvalidInput(message) => {
-                assert!(message.contains("invalid project path"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn compile_agent_reports_missing_entrypoint_for_pyinstaller_backend() {
-        let project_dir = unique_temp_dir("agent-seal-compile-direct-pyinstaller-project");
-        let output_dir = unique_temp_dir("agent-seal-compile-direct-pyinstaller-out");
-        let err = compile_agent(&project_dir, &output_dir, Backend::PyInstaller)
-            .expect_err("missing main.py should fail pyinstaller backend");
-
-        match err {
-            SealError::CompilationError(message) => {
-                assert!(message.contains("missing entrypoint"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod routes;
+#[path = "sandbox.rs"]
 pub mod sandbox;
 pub mod state;
 

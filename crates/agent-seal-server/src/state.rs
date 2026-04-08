@@ -6,6 +6,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
+use crate::sandbox::{DockerBackend, SandboxBackend};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobStatus {
     pub id: String,
@@ -36,6 +38,7 @@ pub struct ServerState {
     pub jobs: Arc<RwLock<HashMap<String, JobStatus>>>,
     pub compile_dir: PathBuf,
     pub output_dir: PathBuf,
+    pub sandbox_backend: Arc<dyn SandboxBackend>,
 }
 
 impl ServerState {
@@ -44,6 +47,7 @@ impl ServerState {
             jobs: Arc::new(RwLock::new(HashMap::new())),
             compile_dir,
             output_dir,
+            sandbox_backend: Arc::new(DockerBackend::new()),
         }
     }
 

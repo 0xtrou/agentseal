@@ -1,17 +1,19 @@
 pub mod assemble;
+pub mod backend;
 pub mod compile;
 pub mod embed;
-pub mod nuitka;
-pub mod pyinstaller;
 
 use agent_seal_core::{error::SealError, secret::generate_master_secret, types::AgentMode};
 use clap::{Parser, ValueEnum};
 use std::{path::PathBuf, str::FromStr};
 
+use crate::backend::{CompileBackend, GoBackend, NuitkaBackend, PyInstallerBackend};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum CliBackend {
     Nuitka,
     Pyinstaller,
+    Go,
 }
 
 #[derive(Debug, Parser)]
@@ -68,12 +70,14 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
 
     std::fs::create_dir_all(&output_parent)?;
 
-    let backend = match cli.backend {
-        CliBackend::Nuitka => compile::Backend::Nuitka,
-        CliBackend::Pyinstaller => compile::Backend::PyInstaller,
+    let backend: Box<dyn CompileBackend> = match cli.backend {
+        CliBackend::Nuitka => Box::new(NuitkaBackend),
+        CliBackend::Pyinstaller => Box::new(PyInstallerBackend),
+        CliBackend::Go => Box::new(GoBackend),
     };
 
-    let compiled_binary = compile::compile_agent(&cli.project, &output_parent, backend)?;
+    let compiled_binary =
+        compile::compile_agent_with_backend(&cli.project, &output_parent, backend.as_ref())?;
 
     let assembled = assemble::assemble(&assemble::AssembleConfig {
         agent_elf_path: compiled_binary,

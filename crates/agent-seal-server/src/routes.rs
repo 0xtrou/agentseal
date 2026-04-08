@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::debug;
 
-use crate::sandbox::{SandboxConfig, SandboxProvisioner, copy_into_sandbox, exec_in_sandbox};
+use crate::sandbox::{SandboxConfig, copy_into_sandbox, exec_in_sandbox};
 use crate::state::{JobState, ServerState};
 
 static NEXT_JOB_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -214,7 +214,7 @@ async fn dispatch(
         .await;
 
     tokio::spawn(async move {
-        let provisioner = SandboxProvisioner::new();
+        let provisioner = state_for_task.sandbox_backend.clone();
         let Some(job_snapshot) = state_for_task.get_job(&job_id_for_task).await else {
             return;
         };
@@ -251,11 +251,14 @@ async fn dispatch(
             })
             .await;
 
-        let _ = provisioner.collect_fingerprint(&sandbox).await;
-
         let binary_path = PathBuf::from(&output_path);
-        let copy_res =
-            copy_into_sandbox(&provisioner, &sandbox, &binary_path, "/tmp/agent-sealed").await;
+        let copy_res = copy_into_sandbox(
+            provisioner.as_ref(),
+            &sandbox,
+            &binary_path,
+            "/tmp/agent-sealed",
+        )
+        .await;
 
         if let Err(err) = copy_res {
             let _ = provisioner.destroy(&sandbox).await;
@@ -270,7 +273,7 @@ async fn dispatch(
         }
 
         let exec_result = exec_in_sandbox(
-            &provisioner,
+            provisioner.as_ref(),
             &sandbox,
             "chmod +x /tmp/agent-sealed && /tmp/agent-sealed",
             sandbox_cfg.timeout_secs,
