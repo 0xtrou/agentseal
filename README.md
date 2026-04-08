@@ -136,9 +136,51 @@ In short: Agent Seal raises attacker cost and narrows abuse windows; it is not a
 | `agent-seal` | bin | Umbrella CLI that provides `seal compile`, `seal launch`, `seal keygen`, `seal sign`, `seal verify`, and `seal server` |
 | `agent-seal-core` | lib | Shared types, crypto boundaries, payload metadata, derivation primitives, and Ed25519 signing primitives |
 | `agent-seal-fingerprint` | lib | Fingerprint collection, canonicalization, mismatch detection |
-| `agent-seal-launcher` | bin | Runtime launcher for decrypt and execution flow (Linux only) |
-| `agent-seal-compiler` | lib + bin | Build and seal pipeline, backend adapters (`nuitka`, `pyinstaller`) |
-| `agent-seal-server` | bin | Orchestration API that composes compile, dispatch, and job management |
+| `agent-seal-launcher` | bin | Runtime launcher for decrypt and execution flow (Linux, macOS, Windows) |
+| `agent-seal-compiler` | lib + bin | Build and seal pipeline, backend adapters (`nuitka`, `pyinstaller`, `go`) |
+| `agent-seal-server` | bin | Orchestration API that composes compile, dispatch, and sandbox management |
+
+## Compatibility Matrix
+
+### Compile Backends
+
+| Backend | Detection Signal | Produces | Status |
+|---|---|---|---|
+| Nuitka | `main.py` or `setup.py` | Static Linux ELF (Python → C → native) | Stable |
+| PyInstaller | `main.py` | Linux ELF (Python import freeze) | Stable |
+| Go | `go.mod` | Static Linux ELF (`CGO_ENABLED=0`) | Stable |
+
+Auto-detection tries backends in order: Nuitka → PyInstaller → Go. Explicit selection via `--backend nuitka/pyinstaller/go`.
+
+### Sandbox Targets
+
+| Backend | API | Copy Strategy | Isolation Level | Status |
+|---|---|---|---|---|
+| Docker | Docker CLI | `docker cp` into container | Process + capabilities | Stable |
+| Firecracker | REST API (Unix socket) | Bake into rootfs | MicroVM (kernel-level) | Planned |
+
+### Platform Support
+
+| Platform | Launcher | Compilation | Status |
+|---|---|---|---|
+| Linux x86_64 | Full (memfd + fexecve + seccomp) | Native | Stable |
+| macOS arm64 | Stub (protection + cleanup) | Cross-compile via Docker | Foundation |
+| Windows x86_64 | Stub (no-op) | Cross-compile via Docker | Foundation |
+
+Linux launcher features: seccomp allowlist filter, `PR_SET_NO_NEW_PRIVS`, `PR_SET_DUMPABLE(0)`, ptrace anti-debug, env scrub (master secret denied to child), output size limits (64 MB/stream), self-delete on launch.
+
+### Fingerprint Signals
+
+| Signal | Stability | Platform | Status |
+|---|---|---|---|
+| Machine ID HMAC | Stable | Linux | Active |
+| Hostname | Semi-stable | Linux | Active |
+| Kernel release | Stable | Linux | Active |
+| Cgroup path | Semi-stable | Linux | Active |
+| Proc cmdline hash | Stable | Linux | Active |
+| MAC address | Stable | Linux | Active |
+| DMI product UUID HMAC | Stable | Linux | Active |
+| Namespace inodes (mnt/pid/net/uts) | Ephemeral | Linux | Active (session mode) |
 
 ## Installation
 
@@ -216,7 +258,7 @@ Options:
   --sandbox-fingerprint <HEX>      64-hex sandbox identity [default: auto]
   --output <PATH>                  Output path for the sealed binary
   --launcher <PATH>                Path to agent-seal-launcher binary (for assembly)
-  --backend <BACKEND>              Compile backend [default: nuitka] (nuitka | pyinstaller)
+  --backend <BACKEND>              Compile backend [default: nuitka] (nuitka | pyinstaller | go)
   --mode <MODE>                    Agent execution mode [default: batch] (batch | interactive)
 ```
 
