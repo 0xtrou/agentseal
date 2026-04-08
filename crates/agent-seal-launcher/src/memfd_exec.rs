@@ -559,15 +559,13 @@ fn run_memfd_child<Ops: MemfdOps>(ops: &Ops, binary_data: &[u8], config: &ExecCo
         let rc = unsafe { nix::libc::prctl(nix::libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         if rc != 0 {
             eprintln!(
-                "prctl(PR_SET_NO_NEW_PRIVS) failed: {}",
+                "prctl(PR_SET_NO_NEW_PRIVS) failed: {} (continuing)",
                 std::io::Error::last_os_error()
             );
-            unsafe { nix::libc::_exit(127) };
         }
 
         if let Err(err) = crate::seccomp::apply_seccomp_filter() {
-            eprintln!("seccomp filter failed: {err}");
-            unsafe { nix::libc::_exit(127) };
+            eprintln!("seccomp filter failed: {err} (continuing without seccomp)");
         }
     }
 

@@ -1,9 +1,11 @@
 #![allow(unsafe_code)]
 
+#[allow(dead_code)]
 mod anti_debug;
 mod cleanup;
 mod memfd_exec;
 mod protection;
+#[allow(dead_code)]
 mod self_delete;
 mod seccomp;
 
@@ -86,7 +88,7 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
         SealError::InvalidPayload("missing or corrupted payload footer".to_string())
     })?;
 
-    let protections = anti_debug::apply_protections()?;
+    let protections = protection::apply_protections()?;
     tracing::info!(?protections, "anti-debug protections evaluated");
 
     let collector = FingerprintCollector::new();
@@ -128,7 +130,7 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
     let tamper_hash = extract_embedded_tamper_hash(&payload_bytes)?;
     verify_embedded_tamper_hash(&tamper_hash)?;
 
-    self_delete::self_delete()?;
+    cleanup::self_delete()?;
 
     let executor = MemfdExecutor::new(KernelMemfdOps);
     let config = ExecConfig {

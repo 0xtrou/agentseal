@@ -11,7 +11,6 @@ use agent_seal_core::error::SealError;
 pub use macos::self_delete;
 
 #[cfg(target_os = "linux")]
-#[allow(unused_imports)]
 pub use linux::self_delete;
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
