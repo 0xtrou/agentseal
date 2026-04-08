@@ -43,7 +43,9 @@ pub struct InteractiveHandle {
     stderr: Arc<Mutex<Vec<u8>>>,
     stdout_thread: JoinHandle<Result<(), SealError>>,
     stderr_thread: JoinHandle<Result<(), SealError>>,
+    #[allow(dead_code)]
     signal_thread: Option<JoinHandle<()>>,
+    #[allow(dead_code)]
     lifetime_thread: Option<JoinHandle<()>>,
     child_reaped: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -57,10 +59,6 @@ impl InteractiveHandle {
             .join()
             .map_err(|_| SealError::InvalidInput("stderr reader thread panicked".to_string()))??;
 
-        if let Some(lifetime_thread) = self.lifetime_thread {
-            let _ = lifetime_thread.join();
-        }
-
         let wait_status = if self.child_reaped.load(std::sync::atomic::Ordering::Acquire) {
             WaitStatus::Exited(self.child_pid, 128 + Signal::SIGTERM as i32)
         } else {
@@ -69,7 +67,7 @@ impl InteractiveHandle {
 
         if let Some(signal_thread) = self.signal_thread {
             let _ = signal_thread.join();
-        }
+        };
 
         let stdout = self
             .stdout
