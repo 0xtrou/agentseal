@@ -2,8 +2,8 @@ use crate::embed::{embed_master_secret, embed_tamper_hash};
 use agent_seal_core::{
     derive::derive_env_key,
     error::SealError,
-    payload::{pack_payload, write_footer},
-    types::{LAUNCHER_PAYLOAD_SENTINEL, PayloadFooter},
+    payload::{pack_payload_with_mode, write_footer},
+    types::{AgentMode, LAUNCHER_PAYLOAD_SENTINEL, PayloadFooter},
 };
 use sha2::{Digest, Sha256};
 use std::{io::Cursor, path::PathBuf};
@@ -14,6 +14,7 @@ pub struct AssembleConfig {
     pub master_secret: [u8; 32],
     pub stable_fingerprint_hash: [u8; 32],
     pub user_fingerprint: [u8; 32],
+    pub mode: AgentMode,
 }
 
 pub fn assemble(config: &AssembleConfig) -> Result<Vec<u8>, SealError> {
@@ -24,7 +25,8 @@ pub fn assemble(config: &AssembleConfig) -> Result<Vec<u8>, SealError> {
         &config.user_fingerprint,
     )?;
 
-    let encrypted_payload = pack_payload(Cursor::new(&agent_elf_bytes), &key)?;
+    let encrypted_payload =
+        pack_payload_with_mode(Cursor::new(&agent_elf_bytes), &key, config.mode)?;
     let launcher_bytes = std::fs::read(&config.launcher_path)?;
 
     let launcher_with_secret = embed_master_secret(&launcher_bytes, &config.master_secret)?;
@@ -63,9 +65,9 @@ mod tests {
     use super::*;
     use agent_seal_core::{
         derive::derive_env_key,
-        payload::{pack_payload, read_footer, unpack_payload, write_footer},
+        payload::{pack_payload_with_mode, read_footer, unpack_payload, write_footer},
         types::{
-            LAUNCHER_PAYLOAD_SENTINEL, LAUNCHER_SECRET_MARKER, LAUNCHER_TAMPER_MARKER,
+            AgentMode, LAUNCHER_PAYLOAD_SENTINEL, LAUNCHER_SECRET_MARKER, LAUNCHER_TAMPER_MARKER,
             PayloadFooter,
         },
     };
@@ -106,6 +108,7 @@ mod tests {
             master_secret: [1_u8; 32],
             stable_fingerprint_hash: [2_u8; 32],
             user_fingerprint: [3_u8; 32],
+            mode: AgentMode::Batch,
         };
 
         let assembled = assemble(&config).expect("assembly should succeed");
@@ -116,8 +119,9 @@ mod tests {
             &config.user_fingerprint,
         )
         .expect("key derivation should succeed");
-        let expected_payload = pack_payload(Cursor::new(agent_bytes.clone()), &key)
-            .expect("payload packing should succeed");
+        let expected_payload =
+            pack_payload_with_mode(Cursor::new(agent_bytes.clone()), &key, AgentMode::Batch)
+                .expect("payload packing should succeed");
 
         assert!(assembled.len() > launcher_bytes.len());
 
@@ -168,15 +172,17 @@ mod tests {
             master_secret,
             stable_fingerprint_hash,
             user_fingerprint,
+            mode: AgentMode::Batch,
         };
 
         let assembled = assemble(&config).expect("assembly should succeed");
 
         let key = derive_env_key(&master_secret, &stable_fingerprint_hash, &user_fingerprint)
             .expect("key derivation should succeed");
-        let payload_len = pack_payload(Cursor::new(agent_bytes.clone()), &key)
-            .expect("payload packing should succeed")
-            .len();
+        let payload_len =
+            pack_payload_with_mode(Cursor::new(agent_bytes.clone()), &key, AgentMode::Batch)
+                .expect("payload packing should succeed")
+                .len();
         let footer_len = 64;
         let payload_start = assembled.len() - payload_len - footer_len;
         assert_eq!(
@@ -211,6 +217,7 @@ mod tests {
             master_secret: [4_u8; 32],
             stable_fingerprint_hash: [5_u8; 32],
             user_fingerprint: [6_u8; 32],
+            mode: AgentMode::Batch,
         };
 
         let assembled = assemble(&config).expect("assembly should succeed");
@@ -247,6 +254,7 @@ mod tests {
             master_secret: [1_u8; 32],
             stable_fingerprint_hash: [2_u8; 32],
             user_fingerprint: [3_u8; 32],
+            mode: AgentMode::Batch,
         })
         .expect_err("launcher without markers should fail embedding");
 
@@ -274,6 +282,7 @@ mod tests {
             master_secret: [7_u8; 32],
             stable_fingerprint_hash: [8_u8; 32],
             user_fingerprint: [9_u8; 32],
+            mode: AgentMode::Batch,
         };
 
         let assembled = assemble(&config).expect("assembly should succeed");
@@ -286,7 +295,8 @@ mod tests {
         )
         .expect("key derivation should succeed");
         let encrypted_payload =
-            pack_payload(Cursor::new(&agent_bytes), &key).expect("payload packing should succeed");
+            pack_payload_with_mode(Cursor::new(&agent_bytes), &key, AgentMode::Batch)
+                .expect("payload packing should succeed");
         let launcher_len =
             assembled.len() - LAUNCHER_PAYLOAD_SENTINEL.len() - encrypted_payload.len() - 64;
         let launcher_with_tamper = &assembled[..launcher_len];
@@ -307,6 +317,7 @@ mod tests {
             master_secret: [1_u8; 32],
             stable_fingerprint_hash: [2_u8; 32],
             user_fingerprint: [3_u8; 32],
+            mode: AgentMode::Batch,
         })
         .expect_err("missing agent file should surface io error");
 
@@ -327,6 +338,7 @@ mod tests {
             master_secret: [1_u8; 32],
             stable_fingerprint_hash: [2_u8; 32],
             user_fingerprint: [3_u8; 32],
+            mode: AgentMode::Batch,
         })
         .expect_err("missing launcher file should surface io error");
 

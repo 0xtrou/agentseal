@@ -1,6 +1,8 @@
 #[derive(clap::Args)]
 #[command(name = "proxy")]
-#[command(about = "Start the Agent Seal LLM proxy")]
+#[command(
+    about = "Start the Agent Seal LLM proxy\n\nDEPRECATED: This command is retained as an optional development tool.\nEnterprise deployments should use BYOK/BYOE patterns instead."
+)]
 pub struct Cli {
     #[arg(long)]
     pub provider_key: String,

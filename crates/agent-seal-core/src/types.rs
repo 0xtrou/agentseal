@@ -23,6 +23,7 @@ pub struct PayloadHeader {
     pub fmt_version: u16,
     pub chunk_count: u32,
     pub header_hmac: [u8; 32],
+    pub mode: AgentMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -35,6 +36,30 @@ pub struct ChunkRecord {
 pub struct PayloadFooter {
     pub original_hash: [u8; 32],
     pub launcher_hash: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum AgentMode {
+    #[default]
+    Batch,
+    Interactive,
+}
+
+impl AgentMode {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::Batch => 0,
+            Self::Interactive => 1,
+        }
+    }
+
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Batch),
+            1 => Some(Self::Interactive),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -6,3 +6,4 @@ pub mod tamper;
 pub mod crypto;
 pub mod payload;
 pub mod derive;
+pub mod signing;

@@ -390,6 +390,7 @@ fn compiler_options_from_request(
             sandbox_fingerprint: req.sandbox_fingerprint,
             output: output_path,
             backend: CliBackend::Nuitka,
+            mode: agent_seal_compiler::CliMode::Batch,
             launcher: Some(compile_output_dir.join("agent-seal-launcher")),
         },
         fingerprint_mode,

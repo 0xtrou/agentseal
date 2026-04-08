@@ -18,3 +18,4 @@ rand = { workspace = true }
 zeroize = { workspace = true }
 hex = { workspace = true }
 tracing = { workspace = true }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }

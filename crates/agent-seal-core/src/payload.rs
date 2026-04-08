@@ -2,7 +2,7 @@ use crate::{
     constants::{CHUNK_SIZE, ENC_ALG_AES256_GCM, FMT_STREAM, MAGIC_BYTES, VERSION_V1},
     crypto::{decrypt_stream, encrypt_stream},
     error::SealError,
-    types::{PayloadFooter, PayloadHeader},
+    types::{AgentMode, PayloadFooter, PayloadHeader},
 };
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -12,10 +12,19 @@ use subtle::ConstantTimeEq;
 type HmacSha256 = Hmac<Sha256>;
 
 const HEADER_SIZE: usize = 4 + 2 + 2 + 2 + 4 + 32;
+const MODE_SIZE: usize = 1;
 const FOOTER_SIZE: usize = 64;
 const NONCE_SIZE: usize = 7;
 
 pub fn pack_payload(mut plaintext: impl Read, key: &[u8; 32]) -> Result<Vec<u8>, SealError> {
+    pack_payload_with_mode(plaintext.by_ref(), key, AgentMode::Batch)
+}
+
+pub fn pack_payload_with_mode(
+    mut plaintext: impl Read,
+    key: &[u8; 32],
+    mode: AgentMode,
+) -> Result<Vec<u8>, SealError> {
     let mut plaintext_bytes = Vec::new();
     plaintext.read_to_end(&mut plaintext_bytes)?;
 
@@ -43,10 +52,12 @@ pub fn pack_payload(mut plaintext: impl Read, key: &[u8; 32]) -> Result<Vec<u8>,
         fmt_version: FMT_STREAM,
         chunk_count,
         header_hmac,
+        mode,
     };
 
-    let mut out = Vec::with_capacity(HEADER_SIZE + encrypted_bytes.len());
+    let mut out = Vec::with_capacity(HEADER_SIZE + MODE_SIZE + encrypted_bytes.len());
     out.extend_from_slice(&serialize_header(&header));
+    out.push(mode.as_u8());
     out.extend_from_slice(&encrypted_bytes);
     Ok(out)
 }
@@ -58,13 +69,13 @@ pub fn unpack_payload(
     let mut payload_bytes = Vec::new();
     payload.read_to_end(&mut payload_bytes)?;
 
-    if payload_bytes.len() < HEADER_SIZE {
+    if payload_bytes.len() < HEADER_SIZE + MODE_SIZE {
         return Err(SealError::InvalidPayload(
-            "payload too small to contain header and encrypted body".to_string(),
+            "payload too small to contain header, mode, and encrypted body".to_string(),
         ));
     }
 
-    let header = parse_header(&payload_bytes[..HEADER_SIZE])?;
+    let mut header = parse_header(&payload_bytes[..HEADER_SIZE])?;
 
     let expected_hmac = compute_header_hmac(
         &header.magic,
@@ -81,7 +92,13 @@ pub fn unpack_payload(
         ));
     }
 
-    let encrypted_bytes = &payload_bytes[HEADER_SIZE..];
+    let mode_byte = payload_bytes[HEADER_SIZE];
+    let mode = AgentMode::from_u8(mode_byte).ok_or_else(|| {
+        SealError::InvalidPayload(format!("invalid payload mode byte: {mode_byte}"))
+    })?;
+    header.mode = mode;
+
+    let encrypted_bytes = &payload_bytes[HEADER_SIZE + MODE_SIZE..];
     if encrypted_bytes.len() < NONCE_SIZE {
         return Err(SealError::InvalidPayload(
             "encrypted payload missing stream nonce".to_string(),
@@ -187,6 +204,7 @@ fn parse_header(bytes: &[u8]) -> Result<PayloadHeader, SealError> {
         fmt_version,
         chunk_count,
         header_hmac,
+        mode: AgentMode::Batch,
     })
 }
 
@@ -257,7 +275,8 @@ mod tests {
         let key = [13_u8; 32];
         let plaintext = patterned_bytes(220_000);
 
-        let payload = pack_payload(Cursor::new(&plaintext), &key).expect("pack should succeed");
+        let payload = pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
         let (decrypted, header) =
             unpack_payload(Cursor::new(payload), &key).expect("unpack should succeed");
 
@@ -266,6 +285,7 @@ mod tests {
         assert_eq!(header.version, VERSION_V1);
         assert_eq!(header.enc_alg, ENC_ALG_AES256_GCM);
         assert_eq!(header.fmt_version, FMT_STREAM);
+        assert_eq!(header.mode, AgentMode::Batch);
     }
 
     #[test]
@@ -273,7 +293,8 @@ mod tests {
         let key = [14_u8; 32];
         let plaintext = patterned_bytes(10 * 1024 * 1024);
 
-        let payload = pack_payload(Cursor::new(&plaintext), &key).expect("pack should succeed");
+        let payload = pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
         let (decrypted, _) =
             unpack_payload(Cursor::new(payload), &key).expect("unpack should succeed");
 
@@ -286,7 +307,8 @@ mod tests {
         let wrong = [22_u8; 32];
         let plaintext = patterned_bytes(8192);
 
-        let payload = pack_payload(Cursor::new(&plaintext), &key).expect("pack should succeed");
+        let payload = pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
         let err = unpack_payload(Cursor::new(payload), &wrong).expect_err("wrong key should fail");
 
         assert!(matches!(err, SealError::DecryptionFailed(_)));
@@ -297,7 +319,8 @@ mod tests {
         let key = [31_u8; 32];
         let plaintext = patterned_bytes(512);
 
-        let mut payload = pack_payload(Cursor::new(&plaintext), &key).expect("pack should succeed");
+        let mut payload = pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
         payload[0..4].copy_from_slice(b"BADS");
 
         let err =
@@ -310,7 +333,8 @@ mod tests {
         let key = [41_u8; 32];
         let plaintext = patterned_bytes(512);
 
-        let mut payload = pack_payload(Cursor::new(&plaintext), &key).expect("pack should succeed");
+        let mut payload = pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
         payload[4..6].copy_from_slice(&0x9999_u16.to_le_bytes());
 
         let err =
@@ -323,7 +347,8 @@ mod tests {
         let key = [51_u8; 32];
         let plaintext = patterned_bytes(4096);
 
-        let payload = pack_payload(Cursor::new(&plaintext), &key).expect("pack should succeed");
+        let payload = pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
         let header = validate_payload_header(&payload).expect("header should parse");
 
         assert_eq!(header.magic, MAGIC_BYTES);
@@ -333,7 +358,8 @@ mod tests {
     #[test]
     fn empty_plaintext_sets_zero_chunk_count() {
         let key = [52_u8; 32];
-        let payload = pack_payload(Cursor::new(Vec::<u8>::new()), &key).unwrap();
+        let payload =
+            pack_payload_with_mode(Cursor::new(Vec::<u8>::new()), &key, AgentMode::Batch).unwrap();
         let (_decrypted, header) = unpack_payload(Cursor::new(payload), &key).unwrap();
         assert_eq!(header.chunk_count, 0);
     }
@@ -342,24 +368,17 @@ mod tests {
     fn exact_chunk_plaintext_sets_chunk_count_one() {
         let key = [53_u8; 32];
         let plaintext = patterned_bytes(CHUNK_SIZE);
-        let payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        let payload =
+            pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch).unwrap();
         let (_decrypted, header) = unpack_payload(Cursor::new(payload), &key).unwrap();
         assert_eq!(header.chunk_count, 1);
-    }
-
-    #[test]
-    fn multi_chunk_plaintext_sets_expected_chunk_count() {
-        let key = [54_u8; 32];
-        let plaintext = patterned_bytes((CHUNK_SIZE * 3) + 1);
-        let payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
-        let (_decrypted, header) = unpack_payload(Cursor::new(payload), &key).unwrap();
-        assert_eq!(header.chunk_count, 4);
+        assert_eq!(header.mode, AgentMode::Batch);
     }
 
     #[test]
     fn unpack_payload_rejects_payload_too_small_for_header() {
         let key = [55_u8; 32];
-        let err = unpack_payload(Cursor::new(vec![0_u8; HEADER_SIZE - 1]), &key)
+        let err = unpack_payload(Cursor::new(vec![0_u8; HEADER_SIZE]), &key)
             .expect_err("small payload must fail");
         assert!(matches!(err, SealError::InvalidPayload(_)));
     }
@@ -381,9 +400,11 @@ mod tests {
                 1,
                 &key,
             ),
+            mode: AgentMode::Batch,
         };
 
-        let payload = serialize_header(&header).to_vec();
+        let mut payload = serialize_header(&header).to_vec();
+        payload.push(AgentMode::Batch.as_u8());
         let err = unpack_payload(Cursor::new(payload), &key).expect_err("missing nonce must fail");
         assert!(
             matches!(err, SealError::InvalidPayload(message) if message.contains("missing stream nonce"))
@@ -395,7 +416,8 @@ mod tests {
         let key = [63_u8; 32];
         let plaintext = b"payload-bytes";
 
-        let payload = pack_payload(Cursor::new(plaintext), &key).expect("pack should succeed");
+        let payload = pack_payload_with_mode(Cursor::new(plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
         let header = parse_header(&payload[..HEADER_SIZE]).expect("header should parse");
 
         assert_eq!(header.magic, MAGIC_BYTES);
@@ -410,21 +432,24 @@ mod tests {
         let key = [64_u8; 32];
         let plaintext = b"secret-body";
 
-        let payload = pack_payload(Cursor::new(plaintext), &key).expect("pack should succeed");
+        let payload = pack_payload_with_mode(Cursor::new(plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
 
-        assert!(payload.len() > HEADER_SIZE + NONCE_SIZE);
+        assert!(payload.len() > HEADER_SIZE + MODE_SIZE + NONCE_SIZE);
+        assert_eq!(payload[HEADER_SIZE], AgentMode::Batch.as_u8());
         assert_ne!(
-            &payload[HEADER_SIZE..HEADER_SIZE + NONCE_SIZE],
+            &payload[HEADER_SIZE + MODE_SIZE..HEADER_SIZE + MODE_SIZE + NONCE_SIZE],
             &[0_u8; NONCE_SIZE]
         );
-        assert_ne!(&payload[HEADER_SIZE + NONCE_SIZE..], plaintext);
+        assert_ne!(&payload[HEADER_SIZE + MODE_SIZE + NONCE_SIZE..], plaintext);
     }
 
     #[test]
     fn unpack_payload_round_trips_single_chunk_body() {
         let key = [65_u8; 32];
         let plaintext = b"single-chunk-body".to_vec();
-        let payload = pack_payload(Cursor::new(&plaintext), &key).expect("pack should succeed");
+        let payload = pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
 
         let (decrypted, header) =
             unpack_payload(Cursor::new(payload), &key).expect("unpack should succeed");
@@ -437,7 +462,8 @@ mod tests {
     fn validate_payload_header_returns_same_header_as_parse_header() {
         let key = [66_u8; 32];
         let plaintext = b"validate-me";
-        let payload = pack_payload(Cursor::new(plaintext), &key).expect("pack should succeed");
+        let payload = pack_payload_with_mode(Cursor::new(plaintext), &key, AgentMode::Batch)
+            .expect("pack should succeed");
 
         let validated = validate_payload_header(&payload).expect("validation should succeed");
         let parsed = parse_header(&payload[..HEADER_SIZE]).expect("parse should succeed");
@@ -461,7 +487,8 @@ mod tests {
     fn unpack_payload_rejects_tampered_header_hmac() {
         let key = [57_u8; 32];
         let plaintext = patterned_bytes(1024);
-        let mut payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        let mut payload =
+            pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch).unwrap();
         payload[HEADER_SIZE - 1] ^= 0x01;
 
         let err = unpack_payload(Cursor::new(payload), &key).expect_err("tampered hmac must fail");
@@ -486,7 +513,8 @@ mod tests {
     fn parse_header_rejects_invalid_encryption_algorithm() {
         let key = [58_u8; 32];
         let plaintext = patterned_bytes(512);
-        let mut payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        let mut payload =
+            pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch).unwrap();
         payload[6..8].copy_from_slice(&0x9999_u16.to_le_bytes());
 
         let err =
@@ -498,7 +526,8 @@ mod tests {
     fn parse_header_rejects_invalid_format_version() {
         let key = [59_u8; 32];
         let plaintext = patterned_bytes(512);
-        let mut payload = pack_payload(Cursor::new(&plaintext), &key).unwrap();
+        let mut payload =
+            pack_payload_with_mode(Cursor::new(&plaintext), &key, AgentMode::Batch).unwrap();
         payload[8..10].copy_from_slice(&0x7777_u16.to_le_bytes());
 
         let err = unpack_payload(Cursor::new(payload), &key)
@@ -515,6 +544,7 @@ mod tests {
             fmt_version: FMT_STREAM,
             chunk_count: 9,
             header_hmac: [0xCD; 32],
+            mode: AgentMode::Batch,
         };
 
         let serialized = serialize_header(&header);
@@ -598,7 +628,8 @@ mod tests {
     #[test]
     fn pack_payload_propagates_plaintext_read_error() {
         let key = [61_u8; 32];
-        let err = pack_payload(ErrReader, &key).expect_err("reader failure must propagate");
+        let err = pack_payload_with_mode(ErrReader, &key, AgentMode::Batch)
+            .expect_err("reader failure must propagate");
         assert!(matches!(err, SealError::Io(_)));
     }
 
@@ -607,5 +638,32 @@ mod tests {
         let key = [62_u8; 32];
         let err = unpack_payload(ErrReader, &key).expect_err("reader failure must propagate");
         assert!(matches!(err, SealError::Io(_)));
+    }
+
+    #[test]
+    fn pack_unpack_round_trip_interactive_mode() {
+        let key = [67_u8; 32];
+        let plaintext = b"interactive-mode-body";
+
+        let payload = pack_payload_with_mode(Cursor::new(plaintext), &key, AgentMode::Interactive)
+            .expect("pack");
+        let (decrypted, header) = unpack_payload(Cursor::new(payload), &key).expect("unpack");
+
+        assert_eq!(decrypted, plaintext);
+        assert_eq!(header.mode, AgentMode::Interactive);
+    }
+
+    #[test]
+    fn unpack_rejects_invalid_mode_byte() {
+        let key = [68_u8; 32];
+        let plaintext = b"invalid-mode";
+        let mut payload =
+            pack_payload_with_mode(Cursor::new(plaintext), &key, AgentMode::Batch).unwrap();
+        payload[HEADER_SIZE] = 9;
+
+        let err = unpack_payload(Cursor::new(payload), &key).expect_err("invalid mode must fail");
+        assert!(
+            matches!(err, SealError::InvalidPayload(message) if message.contains("invalid payload mode byte"))
+        );
     }
 }

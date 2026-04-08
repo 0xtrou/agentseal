@@ -4,7 +4,7 @@ pub mod embed;
 pub mod nuitka;
 pub mod pyinstaller;
 
-use agent_seal_core::{error::SealError, secret::generate_master_secret};
+use agent_seal_core::{error::SealError, secret::generate_master_secret, types::AgentMode};
 use clap::{Parser, ValueEnum};
 use std::{path::PathBuf, str::FromStr};
 
@@ -28,8 +28,25 @@ pub struct Cli {
     pub output: PathBuf,
     #[arg(long, value_enum, default_value_t = CliBackend::Nuitka)]
     pub backend: CliBackend,
+    #[arg(long, value_enum, default_value_t = CliMode::Batch)]
+    pub mode: CliMode,
     #[arg(long)]
     pub launcher: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum CliMode {
+    Batch,
+    Interactive,
+}
+
+impl From<CliMode> for AgentMode {
+    fn from(mode: CliMode) -> Self {
+        match mode {
+            CliMode::Batch => AgentMode::Batch,
+            CliMode::Interactive => AgentMode::Interactive,
+        }
+    }
 }
 
 pub fn run(cli: Cli) -> Result<(), SealError> {
@@ -64,6 +81,7 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
         master_secret,
         stable_fingerprint_hash,
         user_fingerprint,
+        mode: cli.mode.into(),
     })?;
 
     std::fs::write(&cli.output, &assembled)?;
@@ -227,6 +245,7 @@ mod tests {
             sandbox_fingerprint: "22".repeat(32),
             output: PathBuf::new(),
             backend: CliBackend::Nuitka,
+            mode: CliMode::Batch,
             launcher: Some(PathBuf::from("/tmp/launcher")),
         };
 
@@ -248,6 +267,7 @@ mod tests {
                 sandbox_fingerprint: "22".repeat(32),
                 output: std::env::temp_dir().join("agent-seal-output.bin"),
                 backend: CliBackend::Nuitka,
+                mode: CliMode::Batch,
                 launcher: None,
             };
 
@@ -294,6 +314,7 @@ mod tests {
             sandbox_fingerprint: "22".repeat(32),
             output: std::env::temp_dir().join("agent-seal-output-invalid-user.bin"),
             backend: CliBackend::Nuitka,
+            mode: CliMode::Batch,
             launcher: Some(PathBuf::from("/tmp/launcher")),
         };
 
@@ -315,6 +336,7 @@ mod tests {
             sandbox_fingerprint: "bad-sandbox-hex".to_string(),
             output: std::env::temp_dir().join("agent-seal-output-invalid-sandbox.bin"),
             backend: CliBackend::Nuitka,
+            mode: CliMode::Batch,
             launcher: Some(PathBuf::from("/tmp/launcher")),
         };
 
@@ -336,6 +358,7 @@ mod tests {
             sandbox_fingerprint: "auto".to_string(),
             output: std::env::temp_dir().join("agent-seal-output-auto-sandbox.bin"),
             backend: CliBackend::Pyinstaller,
+            mode: CliMode::Batch,
             launcher: Some(PathBuf::from("/tmp/launcher")),
         };
 
@@ -356,6 +379,7 @@ mod tests {
             sandbox_fingerprint: "22".repeat(32),
             output: std::env::temp_dir().join("agent-seal-output-nuitka-path.bin"),
             backend: CliBackend::Nuitka,
+            mode: CliMode::Batch,
             launcher: Some(PathBuf::from("/tmp/launcher")),
         };
 

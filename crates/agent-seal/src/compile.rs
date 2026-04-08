@@ -14,6 +14,14 @@ pub struct Cli {
     pub launcher: Option<std::path::PathBuf>,
     #[arg(long, value_enum, default_value_t = CompileBackend::Nuitka)]
     pub backend: CompileBackend,
+    #[arg(long, value_enum, default_value_t = CompileMode::Batch)]
+    pub mode: CompileMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum CompileMode {
+    Batch,
+    Interactive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -27,6 +35,10 @@ pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         CompileBackend::Nuitka => agent_seal_compiler::CliBackend::Nuitka,
         CompileBackend::Pyinstaller => agent_seal_compiler::CliBackend::Pyinstaller,
     };
+    let mode = match cli.mode {
+        CompileMode::Batch => agent_seal_compiler::CliMode::Batch,
+        CompileMode::Interactive => agent_seal_compiler::CliMode::Interactive,
+    };
     let compiler_cli = agent_seal_compiler::Cli {
         project: cli.project,
         user_fingerprint: cli.user_fingerprint,
@@ -34,6 +46,7 @@ pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         output: cli.output,
         launcher: cli.launcher,
         backend,
+        mode,
     };
     agent_seal_compiler::run(compiler_cli).map_err(Into::into)
 }
@@ -42,7 +55,7 @@ pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use clap::Parser;
 
-    use super::{Cli, CompileBackend, run};
+    use super::{Cli, CompileBackend, CompileMode, run};
 
     #[derive(Parser)]
     struct ParseCli {
@@ -59,6 +72,7 @@ mod tests {
             output: std::env::temp_dir().join("agent-seal-test-output.asl"),
             launcher: None,
             backend,
+            mode: CompileMode::Batch,
         }
     }
 
