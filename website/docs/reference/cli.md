@@ -171,7 +171,7 @@ Flags:
 - `--compile-dir`: working directory for compile jobs (default: `./.snapfzz-seal/compile`)
 - `--output-dir`: artifact output directory (default: `./.snapfzz-seal/output`)
 
-:::warning No Authentication
+:::warning[No Authentication]
 
 The server has **no built-in authentication or authorization**. Deploy behind an authenticated gateway.
 

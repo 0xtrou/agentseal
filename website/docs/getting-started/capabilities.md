@@ -65,7 +65,7 @@ All sealed binaries must carry a valid Ed25519 signature. The signature covers t
 - Small signature size (64 bytes)
 - Fast verification (suitable for constrained environments)
 
-:::warning Signature Trust Model
+:::warning[Signature Trust Model]
 
 The launcher verifies signatures using the **public key embedded in the artifact itself**. This means:
 
@@ -146,7 +146,7 @@ The launcher attempts to install a seccomp filter that restricts allowed system 
 
 **NOT blocked**: `fork`, `vfork`
 
-:::caution Best-Effort Enforcement
+:::caution[Best-Effort Enforcement]
 
 If seccomp application fails, the launcher **logs a warning and continues without seccomp**. This is not a hard security boundary.
 
@@ -325,7 +325,7 @@ The orchestration API provisions Docker containers with:
 - ✅ Can compile and sign (build-side operations)
 - ❌ Cannot launch sealed agents
 
-:::warning Platform Reality
+:::warning[Platform Reality]
 
 There is **no "no-op stub"** for Windows/macOS that returns success. Execution on non-Linux platforms **fails with an error**.
 

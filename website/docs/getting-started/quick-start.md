@@ -6,7 +6,7 @@ sidebar_position: 2
 
 This section provides a complete end-to-end example with expected output and operational checks.
 
-:::warning Platform Requirement
+:::warning[Platform Requirement]
 
 Sealed agents can **only be executed on Linux x86_64**. macOS and Windows are supported for building/signing only, not for execution.
 

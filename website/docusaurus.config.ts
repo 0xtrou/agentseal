@@ -7,9 +7,9 @@ const config: Config = {
   tagline: 'Encrypted, sandbox-bound agent delivery system',
   favicon: 'img/favicon.svg',
 
-  future: {
-    v4: true,
-  },
+  // future: {
+  //   v4: true, // Requires @docusaurus/faster which has webpack compatibility issues
+  // },
 
   url: 'https://snapfzz-seal.snapfzz.com',
   baseUrl: '/',

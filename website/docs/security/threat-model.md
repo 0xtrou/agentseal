@@ -63,7 +63,7 @@ This is **integrity verification, not authenticity verification**. For productio
 - Payload confidentiality relies on AES-256-GCM with derived keys.
 - Decryption keys are bound to supplied fingerprint components.
 
-:::caution Master Secret Exposure
+:::caution[Master Secret Exposure]
 
 The **master secret is embedded in plaintext** in the sealed binary. This is necessary for self-contained execution but creates a fundamental limitation:
 
@@ -106,7 +106,7 @@ For high-security deployments, consider:
 - Artifact interception and replacement
 - Public key distribution integrity
 
-:::warning Identity Verification Gap
+:::warning[Identity Verification Gap]
 
 Since signatures use embedded public keys, distribution-phase attacks can succeed if:
 
@@ -120,7 +120,7 @@ Since signatures use embedded public keys, distribution-phase attacks can succee
 
 ### Launch phase
 
-:::warning `seal verify` Exit Code
+:::warning[`seal verify` Exit Code]
 
 The `seal verify` command returns exit code `0` even for `INVALID` or `WARNING: unsigned` results.
 
