@@ -16,6 +16,8 @@ pub enum SealError {
     FingerprintMismatch,
     #[error("invalid signature")]
     InvalidSignature,
+    #[error("missing signature: unsigned payload rejected")]
+    MissingSignature,
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid input: {0}")]

@@ -121,7 +121,7 @@ Current target runtimes:
 - Casual payload extraction from static binaries
 - Running encrypted payload in an unrelated sandbox environment
 - Direct exposure of provider API keys from shipped agent artifacts (encrypted at rest; master secret is embedded in assembled binaries)
-- Payload tampering: Ed25519 signatures verify builder identity and payload integrity
+- Payload tampering: Ed25519 signatures (when present) verify builder identity and payload integrity; unsigned payloads are rejected at launch
 
 ### Not protected against
 
@@ -167,7 +167,7 @@ Auto-detection tries backends in order: Nuitka → PyInstaller → Go. Explicit 
 | Platform | Launcher | Compilation | Status |
 |---|---|---|---|
 | Linux x86_64 | Full (memfd + fexecve + seccomp) | Native | Stable |
-| macOS arm64 | Stub (protection + cleanup) | Cross-compile via Docker | Foundation |
+| macOS arm64 | Stub (decrypt only; protection steps are Linux-only) | Cross-compile via Docker | Foundation |
 | Windows x86_64 | Stub (no-op) | Cross-compile via Docker | Foundation |
 
 Linux launcher features: seccomp allowlist filter, `PR_SET_NO_NEW_PRIVS`, `PR_SET_DUMPABLE(0)`, ptrace anti-debug, env scrub (master secret denied to child), output size limits (64 MB/stream, silent truncation), self-delete on launch.

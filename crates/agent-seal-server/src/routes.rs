@@ -1374,4 +1374,26 @@ mod path_validation_tests {
         assert!(result.is_ok());
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejects_symlink_pointing_outside_base() {
+        let tmp = std::env::temp_dir().join("agent-seal-pv-symlink");
+        let outside = std::env::temp_dir().join("agent-seal-pv-outside");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+        #[cfg(target_os = "linux")]
+        std::os::unix::fs::symlink(&outside, tmp.join("escape")).unwrap();
+        #[cfg(target_os = "linux")]
+        {
+            let symlink_path = tmp.join("escape");
+            let result = validate_project_dir(symlink_path.to_str().unwrap(), &tmp);
+            assert_eq!(result.unwrap_err().0, StatusCode::BAD_REQUEST);
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&outside);
+    }
 }

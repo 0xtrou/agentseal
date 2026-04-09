@@ -15,12 +15,12 @@ pub fn derive_env_key(
     validate_32("stable_hash", stable_hash)?;
     validate_32("user_fingerprint", user_fingerprint)?;
 
-    let mut fingerprint_ikm = [0_u8; 64];
-    fingerprint_ikm[..32].copy_from_slice(stable_hash);
-    fingerprint_ikm[32..].copy_from_slice(user_fingerprint);
+    let mut fingerprint_salt = [0_u8; 64];
+    fingerprint_salt[..32].copy_from_slice(stable_hash);
+    fingerprint_salt[32..].copy_from_slice(user_fingerprint);
 
-    let out = hkdf_expand_32(master_secret, &fingerprint_ikm, KDF_INFO_ENV)?;
-    fingerprint_ikm.zeroize();
+    let out = hkdf_expand_32(master_secret, &fingerprint_salt, KDF_INFO_ENV)?;
+    fingerprint_salt.zeroize();
     Ok(out)
 }
 

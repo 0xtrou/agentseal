@@ -55,13 +55,13 @@ pub struct Cli {
 
 fn verify_signature(payload_bytes: &[u8]) -> Result<(), SealError> {
     if payload_bytes.len() < SIG_BLOCK_SIZE {
-        tracing::warn!("payload too short for signature verification; skipping");
-        return Ok(());
+        tracing::error!("payload too short for signature verification");
+        return Err(SealError::MissingSignature);
     }
     let sig_start = payload_bytes.len() - SIG_BLOCK_SIZE;
     if &payload_bytes[sig_start..sig_start + 4] != SIG_MAGIC {
-        tracing::warn!("no signature block found; payload is unsigned");
-        return Ok(());
+        tracing::error!("no signature block found; unsigned payload rejected");
+        return Err(SealError::MissingSignature);
     }
 
     let mut signature = [0u8; 64];
@@ -196,6 +196,9 @@ pub fn format_user_error(err: &SealError) -> String {
             "ERROR: fingerprint mismatch — sandbox environment has changed".to_string()
         }
         SealError::InvalidSignature => "ERROR: invalid signature".to_string(),
+        SealError::MissingSignature => {
+            "ERROR: missing signature — unsigned payload rejected".to_string()
+        }
         SealError::Io(msg) => format!("ERROR: IO failure: {msg}"),
         SealError::InvalidInput(msg) => format!("ERROR: invalid input: {msg}"),
         SealError::CompilationError(msg) => format!("ERROR: compilation error: {msg}"),
@@ -325,16 +328,7 @@ fn extract_embedded_master_secret(payload_bytes: &[u8]) -> Option<[u8; 32]> {
     let mut secret = [0_u8; 32];
     secret.copy_from_slice(&payload_bytes[secret_offset..secret_end]);
 
-    let secret_hex = hex::encode(secret);
-    let decoded = hex::decode(secret_hex).ok()?;
-
-    if decoded.len() != 32 {
-        return None;
-    }
-
-    let mut out = [0_u8; 32];
-    out.copy_from_slice(&decoded);
-    Some(out)
+    Some(secret)
 }
 
 fn extract_embedded_tamper_hash(payload_bytes: &[u8]) -> Result<[u8; 32], SealError> {
@@ -758,6 +752,14 @@ mod tests {
                 "ERROR: IO failure: io".to_string(),
             ),
             (
+                SealError::InvalidSignature,
+                "ERROR: invalid signature".to_string(),
+            ),
+            (
+                SealError::MissingSignature,
+                "ERROR: missing signature — unsigned payload rejected".to_string(),
+            ),
+            (
                 SealError::InvalidInput("input".to_string()),
                 "ERROR: invalid input: input".to_string(),
             ),
@@ -1120,5 +1122,19 @@ mod tests {
         unsafe {
             std::env::remove_var("AGENT_SEAL_MASTER_SECRET_HEX");
         }
+    }
+
+    #[test]
+    fn verify_signature_rejects_payload_shorter_than_sig_block() {
+        let short = vec![0xAA; 50];
+        let err = verify_signature(&short).expect_err("short payload must fail");
+        assert!(matches!(err, SealError::MissingSignature));
+    }
+
+    #[test]
+    fn verify_signature_rejects_unsigned_payload() {
+        let payload = vec![0xAA; 200];
+        let err = verify_signature(&payload).expect_err("unsigned payload must fail");
+        assert!(matches!(err, SealError::MissingSignature));
     }
 }

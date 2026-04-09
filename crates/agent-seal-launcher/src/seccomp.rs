@@ -17,7 +17,7 @@ const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     202, // sched_yield
     14,  // rt_sigprocmask
     13,  // rt_sigaction
-    131, // unknown (verify against target kernel headers)
+    131, // sigaltstack
     9,   // mmap
     11,  // munmap
     10,  // mprotect
@@ -27,8 +27,8 @@ const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     5,   // fstat
     8,   // lseek
     217, // getdents64
-    332, // unknown (verify against target kernel headers)
-    262, // unknown (verify against target kernel headers)
+    332, // statx
+    262, // fchownat
     89,  // readlink
     21,  // access
     439, // faccessat2
@@ -66,9 +66,6 @@ const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     271, // ppoll
     23,  // select
     270, // pselect6
-    425, // unknown (verify against target kernel headers)
-    426, // unknown (verify against target kernel headers)
-    427, // unknown (verify against target kernel headers)
     4,   // stat
     6,   // lstat
     63,  // uname
@@ -141,8 +138,8 @@ mod tests {
         for syscall_nr in [
             0_i64, 1, 3, 60, 231, 202, 13, 14, 131, 9, 11, 10, 12, 158, 257, 5, 8, 217, 332, 262,
             89, 21, 439, 293, 32, 33, 292, 291, 233, 232, 281, 228, 35, 39, 110, 102, 104, 107,
-            108, 41, 42, 44, 45, 47, 46, 48, 49, 50, 288, 54, 55, 56, 435, 7, 271, 23, 270, 425,
-            426, 427, 4, 6, 63, 318,
+            108, 41, 42, 44, 45, 47, 46, 48, 49, 50, 288, 54, 55, 56, 435, 7, 271, 23, 270, 4, 6,
+            63, 318,
         ] {
             assert!(
                 allowed.contains(&syscall_nr),
