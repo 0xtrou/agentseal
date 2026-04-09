@@ -4,13 +4,7 @@ sidebar_position: 5
 
 # Supported Sandboxes
 
-Snapfzz Seal uses sandbox backends for isolated agent execution. This document describes the **currently implemented** sandbox capabilities.
-
-:::warning
-
-Only **Docker** is currently implemented. Native and Firecracker sandboxes documented elsewhere are **NOT implemented**. This document reflects reality.
-
-:::
+Snapfzz Seal uses sandbox backends for isolated agent execution.
 
 ## Sandbox Overview
 
@@ -60,7 +54,7 @@ The sealed agent must be compiled for Linux x86_64, regardless of the host platf
 | PIDs limit | ✅ | Fixed at 64 |
 | Environment variables | ✅ | Pass custom env |
 
-**NOT Implemented** (despite claims elsewhere):
+**NOT Implemented**:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
@@ -149,7 +143,7 @@ curl -X POST http://localhost:9090/api/v1/dispatch \
 
 **Status**: NOT IMPLEMENTED
 
-Contrary to some documentation, there is **no native sandbox backend** in the server.
+There is **no native sandbox backend** in the server.
 
 **What doesn't exist**:
 - ❌ No `NativeBackend` implementation
@@ -160,7 +154,8 @@ Contrary to some documentation, there is **no native sandbox backend** in the se
 **Why it's mentioned**:
 - Seccomp exists in the **launcher** (client-side execution)
 - This is different from server sandbox backends
-- Planning documents reference future native sandbox
+
+For roadmap, see [Roadmap](../roadmap.md).
 
 **Do not attempt**:
 ```json
@@ -174,9 +169,9 @@ Contrary to some documentation, there is **no native sandbox backend** in the se
 
 ### Firecracker Sandbox
 
-**Status**: NOT IMPLEMENTED (Planned only)
+**Status**: NOT IMPLEMENTED
 
-Firecracker microVM execution is documented as "planned" but has **no implementation**.
+Firecracker microVM execution has **no implementation**.
 
 **What doesn't exist**:
 - ❌ No `FirecrackerBackend` implementation
@@ -187,10 +182,10 @@ Firecracker microVM execution is documented as "planned" but has **no implementa
 **What exists**:
 - ✅ `RuntimeKind::Firecracker` enum for detection
 - ✅ Detection heuristics in fingerprint module
-- ✅ Planning documents
+
+For roadmap, see [Roadmap](../roadmap.md).
 
 **If you need this**:
-- Wait for future implementation
 - Use Docker backend currently
 - Consider external Firecracker orchestration
 
@@ -207,16 +202,7 @@ pub type SandboxProvisioner = DockerBackend;
 
 There is no runtime backend selection.
 
-### Future Roadmap
-
-Planned sandbox backends (NOT currently available):
-
-| Backend | Status | Isolation | Target Use Case |
-|---------|--------|-----------|-----------------|
-| Docker | ✅ Implemented | Container | Production |
-| gVisor | 🔜 Planned | User-space kernel | Enhanced isolation |
-| Firecracker | 🔜 Planned | MicroVM | High-security |
-| Kata Containers | 🔜 Planned | VM-container | Strong isolation |
+For planned sandbox backends (gVisor, Firecracker, Kata Containers), see the [Roadmap](../roadmap.md).
 
 ## Resource Management
 
@@ -346,19 +332,4 @@ Logs are **NOT streamed** during execution. They are captured after the process 
 
 The sandbox trait exists in code, but **no registration mechanism is exposed** for custom backends.
 
-**Trait definition** (internal):
-```rust
-#[async_trait]
-pub trait SandboxBackend: Send + Sync {
-    async fn provision(&self, config: &SandboxConfig) -> Result<SandboxHandle, SealError>;
-    async fn copy_into(&self, handle: &SandboxHandle, host_path: &Path, target: &str) -> Result<(), SealError>;
-    async fn exec(&self, handle: &SandboxHandle, command: &str, timeout_secs: u64) -> Result<ExecutionResult, SealError>;
-    async fn destroy(&self, handle: &SandboxHandle) -> Result<(), SealError>;
-    fn runtime_kind(&self) -> RuntimeKind;
-}
-```
-
-**Not user-extensible**:
-- ❌ No `register_sandbox` API
-- ❌ No plugin system
-- ❌ Backend hardcoded at compile time
+For planned sandbox backends (Native, Firecracker, gVisor, Kata Containers), see the [Roadmap](../roadmap.md).

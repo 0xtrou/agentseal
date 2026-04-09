@@ -4,13 +4,7 @@ sidebar_position: 4
 
 # Supported Backends
 
-Snapfzz Seal supports compilation backends for transforming agent source code into sealed executables. This document describes **currently implemented** backends and their limitations.
-
-:::warning
-
-Some features documented elsewhere (auto-install, `--backend-opts`, `--backend-chain`) are **NOT implemented**. This document reflects reality.
-
-:::
+Snapfzz Seal supports compilation backends for transforming agent source code into sealed executables.
 
 ## Backend Overview
 
@@ -144,7 +138,7 @@ seal compile --backend go --project ./agent
 
 **Status**: NOT IMPLEMENTED
 
-Contrary to some documentation, there is **no native backend** for sealing pre-compiled binaries.
+There is **no native backend** for sealing pre-compiled binaries.
 
 **What doesn't exist**:
 - ❌ No `--backend native` option
@@ -232,12 +226,4 @@ pip install nuitka
 
 ## Future Backends
 
-The following backends are **planned** but NOT implemented:
-
-- **Rust** — Native Rust compilation via Cargo
-- **Node.js** — JavaScript/TypeScript agents
-- **Java** — JVM agents via GraalVM
-- **.NET** — C#/F# agents via Native AOT
-- **Native** — Direct binary sealing
-
-These appear in planning documents but have no implementation. Do not rely on them.
+For planned backends (Rust, Node.js, JVM, .NET, Native), see the [Roadmap](../roadmap.md).

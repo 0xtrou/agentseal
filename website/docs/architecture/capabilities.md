@@ -4,13 +4,7 @@ sidebar_position: 3
 
 # Capabilities
 
-Snapfzz Seal provides security capabilities designed to protect AI agent deployments in production environments. This document outlines the core capabilities and their **actual implementation status**.
-
-:::warning
-
-This document reflects the **current implementation**. Some features documented elsewhere may be planned but not yet implemented.
-
-:::
+Snapfzz Seal provides security capabilities designed to protect AI agent deployments in production environments.
 
 ## Cryptographic Capabilities
 
@@ -129,7 +123,7 @@ The launcher implements basic anti-debugging on Linux:
 - ✅ **PR_SET_DUMPABLE=0** — Prevents ptrace attachment
 - ✅ **ptrace(TRACEME)** — Claims tracer slot
 
-**NOT IMPLEMENTED** (despite claims elsewhere):
+**NOT IMPLEMENTED**:
 - ❌ Timing checks for debugging detection
 - ❌ Tracer detection via `/proc/self/status`
 - ❌ Parent process verification
@@ -148,9 +142,9 @@ The launcher attempts to install a seccomp filter that restricts allowed system 
 - File operations: `read`, `write`, `open`, `close`, `stat`, `lstat`, `fstat`
 - Process operations: `exit`, `exit_group`, `arch_prctl`
 - Network operations: `socket`, `connect`, `bind`, `listen`, `accept`, `send`, `recv`
-- Process creation: `clone`, `clone3` (allowed, contrary to some docs)
+- Process creation: `clone`, `clone3` (allowed)
 
-**NOT blocked**: `fork`, `vfork` (despite claims elsewhere)
+**NOT blocked**: `fork`, `vfork`
 
 :::caution Best-Effort Enforcement
 
@@ -182,7 +176,7 @@ The fingerprinting module collects signals from various Linux-specific sources:
 | DMI product UUID HMAC | ✅ | Stable |
 | Namespace inodes | ✅ | Ephemeral |
 
-**NOT IMPLEMENTED** (despite claims elsewhere):
+**NOT IMPLEMENTED**:
 - ❌ CPU model
 - ❌ CPU feature flags
 - ❌ Memory total
@@ -254,7 +248,7 @@ Response (202):
 }
 ```
 
-**NOT IMPLEMENTED** (despite claims elsewhere):
+**NOT IMPLEMENTED**:
 - ❌ `POST /sign` endpoint
 - ❌ `POST /launch` endpoint (use `/dispatch`)
 - ❌ `GET /status/{id}` (use `/api/v1/jobs/{id}`)
@@ -333,7 +327,7 @@ The orchestration API provisions Docker containers with:
 
 :::warning Platform Reality
 
-Contrary to some documentation, there is **no "no-op stub"** for Windows/macOS that returns success. Execution on non-Linux platforms **fails with an error**.
+There is **no "no-op stub"** for Windows/macOS that returns success. Execution on non-Linux platforms **fails with an error**.
 
 :::
 

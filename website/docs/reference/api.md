@@ -4,13 +4,7 @@ sidebar_position: 2
 
 # API Reference
 
-This document describes the **currently implemented** REST API for Snapfzz Seal orchestration server.
-
-:::warning
-
-This reflects the **actual implementation**. Endpoints documented elsewhere (like `/sign`, `/launch`, `/status/{id}`) do not exist.
-
-:::
+This document describes the REST API for Snapfzz Seal orchestration server.
 
 ## Base URL
 
@@ -242,7 +236,7 @@ Health check endpoint.
 
 ## NOT Implemented Endpoints
 
-The following endpoints are **documented elsewhere but do NOT exist**:
+These endpoints do **NOT exist**:
 
 | Endpoint | Status |
 |----------|--------|
