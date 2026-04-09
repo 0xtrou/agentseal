@@ -18,9 +18,7 @@ use agent_seal_core::{
     error::SealError,
     payload::{read_footer, unpack_payload, validate_payload_header},
     signing,
-    types::{
-        LAUNCHER_PAYLOAD_SENTINEL, LAUNCHER_SECRET_MARKER, LAUNCHER_TAMPER_MARKER, PayloadFooter,
-    },
+    types::{LAUNCHER_PAYLOAD_SENTINEL, LAUNCHER_SECRET_MARKER, PayloadFooter},
 };
 use agent_seal_fingerprint::{
     FingerprintCollector, FingerprintSnapshot, canonicalize_ephemeral, canonicalize_stable,
@@ -86,9 +84,11 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
     let payload_bytes = load_payload_bytes(cli.payload.as_deref())?;
     validate_payload_header(&payload_bytes)?;
     verify_signature(&payload_bytes)?;
-    let _footer = extract_footer(&payload_bytes).map_err(|_| {
+    let footer = extract_footer(&payload_bytes).map_err(|_| {
         SealError::InvalidPayload("missing or corrupted payload footer".to_string())
     })?;
+
+    verify_launcher_integrity(&footer.launcher_hash, cli.payload.as_deref())?;
 
     let protections = protection::apply_protections()?;
     tracing::info!(?protections, "anti-debug protections evaluated");
@@ -128,9 +128,6 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
 
     decryption_key.zeroize();
     master_secret.zeroize();
-
-    let tamper_hash = extract_embedded_tamper_hash(&payload_bytes)?;
-    verify_embedded_tamper_hash(&tamper_hash)?;
 
     cleanup::self_delete()?;
 
@@ -331,37 +328,43 @@ fn extract_embedded_master_secret(payload_bytes: &[u8]) -> Option<[u8; 32]> {
     Some(secret)
 }
 
-fn extract_embedded_tamper_hash(payload_bytes: &[u8]) -> Result<[u8; 32], SealError> {
-    let marker_offset = find_marker(payload_bytes, LAUNCHER_TAMPER_MARKER).ok_or_else(|| {
-        SealError::InvalidInput(
-            "embedded tamper hash marker not found in payload bytes".to_string(),
-        )
-    })?;
-    let hash_offset = marker_offset + LAUNCHER_TAMPER_MARKER.len();
-    let hash_end = hash_offset + 32;
-
-    if payload_bytes.len() < hash_end {
-        return Err(SealError::InvalidInput(
-            "embedded tamper hash marker found but hash bytes are truncated".to_string(),
-        ));
-    }
-
-    let mut hash = [0_u8; 32];
-    hash.copy_from_slice(&payload_bytes[hash_offset..hash_end]);
-    Ok(hash)
-}
-
 #[cfg(target_os = "linux")]
-fn verify_embedded_tamper_hash(tamper_hash: &[u8; 32]) -> Result<(), SealError> {
-    tamper::verify_tamper(tamper_hash)
+fn verify_launcher_integrity(
+    expected_hash: &[u8; 32],
+    payload_arg: Option<&str>,
+) -> Result<(), SealError> {
+    let full_binary = match payload_arg {
+        Some(path) if !path.eq_ignore_ascii_case("self") => std::fs::read(path)?,
+        _ => std::fs::read("/proc/self/exe")?,
+    };
+
+    let sentinel_offset =
+        find_marker(&full_binary, LAUNCHER_PAYLOAD_SENTINEL).ok_or_else(|| {
+            SealError::InvalidInput(
+                "cannot find payload sentinel for launcher integrity check".to_string(),
+            )
+        })?;
+
+    let launcher_hash = tamper::compute_hash_of_bytes(&full_binary[..sentinel_offset]);
+
+    if launcher_hash == *expected_hash {
+        Ok(())
+    } else {
+        tracing::error!(
+            expected = %hex::encode(expected_hash),
+            actual = %hex::encode(launcher_hash),
+            "launcher integrity check failed"
+        );
+        Err(SealError::TamperDetected)
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn verify_embedded_tamper_hash(tamper_hash: &[u8; 32]) -> Result<(), SealError> {
-    tracing::warn!(
-        tamper_hash = %hex::encode(tamper_hash),
-        "embedded tamper hash found but tamper verification is skipped on non-Linux platforms"
-    );
+fn verify_launcher_integrity(
+    _expected_hash: &[u8; 32],
+    _payload_arg: Option<&str>,
+) -> Result<(), SealError> {
+    tracing::warn!("launcher integrity verification is skipped on non-Linux platforms");
     Ok(())
 }
 
@@ -638,45 +641,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn extract_embedded_tamper_hash_reads_hash_after_marker() {
-        let hash = [0x7C; 32];
-        let mut binary = vec![0xAA; 16];
-        binary.extend_from_slice(LAUNCHER_TAMPER_MARKER);
-        binary.extend_from_slice(&hash);
-        binary.extend_from_slice(&[0xBB; 16]);
-
-        let extracted = extract_embedded_tamper_hash(&binary).expect("tamper hash should load");
-        assert_eq!(extracted, hash);
-    }
-
-    #[test]
-    fn extract_embedded_tamper_hash_errors_when_marker_missing() {
-        let err = extract_embedded_tamper_hash(b"no-tamper-marker").expect_err("must fail");
-        assert!(matches!(err, SealError::InvalidInput(_)));
-    }
-
-    #[test]
-    fn extract_embedded_tamper_hash_errors_when_hash_bytes_truncated() {
-        let mut binary = vec![0xAA; 16];
-        binary.extend_from_slice(LAUNCHER_TAMPER_MARKER);
-        binary.extend_from_slice(&[0xEE; 31]);
-
-        let err = extract_embedded_tamper_hash(&binary).expect_err("must fail");
-        assert!(matches!(err, SealError::InvalidInput(_)));
-    }
-
     #[cfg(not(target_os = "linux"))]
     #[test]
-    fn verify_embedded_tamper_hash_skips_on_non_linux() {
-        verify_embedded_tamper_hash(&[0xAB; 32]).expect("non-linux should skip tamper check");
+    fn verify_launcher_integrity_skips_on_non_linux() {
+        verify_launcher_integrity(&[0xAB; 32], None)
+            .expect("non-linux should skip integrity check");
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn verify_embedded_tamper_hash_detects_mismatch_on_linux() {
-        let err = verify_embedded_tamper_hash(&[0xAB; 32]).expect_err("wrong hash must fail");
+    fn verify_launcher_integrity_detects_mismatch_on_linux() {
+        use agent_seal_core::tamper::compute_hash_of_bytes;
+
+        // Create a mock assembled binary: launcher || sentinel || payload
+        let launcher = vec![0xAA; 100];
+        let expected_hash = compute_hash_of_bytes(&launcher);
+
+        let mut assembled = launcher.clone();
+        assembled.extend_from_slice(LAUNCHER_PAYLOAD_SENTINEL);
+        assembled.extend_from_slice(&[0xBB; 50]);
+
+        // Write to temp file
+        let temp = std::env::temp_dir().join("agent-seal-integrity-test");
+        std::fs::write(&temp, &assembled).unwrap();
+
+        // Wrong hash should fail
+        let err = verify_launcher_integrity(&[0xCC; 32], Some(temp.to_str().unwrap()))
+            .expect_err("wrong hash must fail");
         assert!(matches!(err, SealError::TamperDetected));
+
+        // Correct hash should pass
+        verify_launcher_integrity(&expected_hash, Some(temp.to_str().unwrap()))
+            .expect("correct hash should pass");
+
+        let _ = std::fs::remove_file(&temp);
     }
 
     #[test]

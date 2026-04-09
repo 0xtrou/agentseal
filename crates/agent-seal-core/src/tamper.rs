@@ -1,12 +1,20 @@
 use crate::error::SealError;
 use subtle::ConstantTimeEq;
 
-#[cfg(target_os = "linux")]
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "linux")]
 use std::fs::File;
 #[cfg(target_os = "linux")]
 use std::io::Read;
+
+/// Compute SHA-256 hash of arbitrary bytes.
+/// Used for launcher portion tamper verification.
+pub fn compute_hash_of_bytes(bytes: &[u8]) -> [u8; 32] {
+    let hash = Sha256::digest(bytes);
+    let mut out = [0_u8; 32];
+    out.copy_from_slice(&hash);
+    out
+}
 
 #[cfg(target_os = "linux")]
 pub fn compute_binary_hash() -> Result<[u8; 32], SealError> {

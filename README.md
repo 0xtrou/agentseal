@@ -394,6 +394,8 @@ Options:
 
 If `--payload` is omitted or set to `self`, the launcher extracts the embedded payload from its own executable (the assembled binary created by `seal compile --launcher`).
 
+> **Note:** `--payload` accepts either a full assembled binary (launcher + payload) or a standalone encrypted payload file. For assembled binaries, the launcher portion is verified via the footer's `launcher_hash` to detect tampering.
+
 **Examples:**
 
 ```bash
