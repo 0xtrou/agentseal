@@ -11,8 +11,8 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://0xtrou.github.io',
-  baseUrl: '/agentseal/',
+  url: 'https://agentseal.snapfzz.com',
+  baseUrl: '/',
 
   organizationName: '0xtrou',
   projectName: 'agentseal',
