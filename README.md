@@ -112,7 +112,7 @@ Current target runtimes:
 - Firecracker microVM environments
 - gVisor-style sandboxed Linux runtime contexts
 
-> **Note:** Runtime detection is heuristic-based (cgroups, `/proc` files, env vars), not hardware-attested. It is advisory metadata and does not feed into the cryptographic fingerprint hash.
+> **Note:** Runtime detection is heuristic-based (cgroups, `/proc` files, env vars), not hardware-attested. It is advisory metadata and does not feed into the cryptographic fingerprint hash. The stable fingerprint collects host-level signals (machine-id, hostname, kernel release, DMI UUID) — these are shared across containers on the same host. In homogeneous cloud fleets, actual binding uniqueness reduces to the user_fingerprint plus any sandbox_fingerprint nonce.
 
 ## Threat Model
 
