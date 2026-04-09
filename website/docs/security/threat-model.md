@@ -120,6 +120,24 @@ Since signatures use embedded public keys, distribution-phase attacks can succee
 
 ### Launch phase
 
+:::warning `seal verify` Exit Code
+
+The `seal verify` command returns exit code `0` even for `INVALID` or `WARNING: unsigned` results.
+
+**Implication**:
+- CI/CD pipelines relying solely on exit code will pass incorrectly
+- Must parse output text or use `--pubkey` for pinned key verification
+
+**Best practice**:
+```bash
+seal verify --binary ./artifact.sealed --pubkey trusted.key
+# Check output for "VALID (pinned to explicit public key)"
+```
+
+:::
+
+### Launch phase
+
 - Input parameter manipulation (`--user-fingerprint`, environment secret values)
 - Runtime host drift affecting fingerprint matching
 - Memory and process introspection by privileged local actors
@@ -146,6 +164,17 @@ Since signatures use embedded public keys, distribution-phase attacks can succee
 - Must be deployed behind authenticated gateway
 - Rate limiting not implemented
 
+:::danger No Transport Security
+
+The built-in server has **no TLS/mTLS implementation**. It binds and serves plain HTTP.
+
+**Required for production**:
+- Deploy behind TLS-terminating reverse proxy
+- Use authenticated API gateway
+- Never expose server directly to untrusted networks
+
+:::
+
 ## Known limitations
 
 ### Technical Limitations
@@ -156,7 +185,9 @@ Since signatures use embedded public keys, distribution-phase attacks can succee
 
 3. **Seccomp is best-effort** — Application failures are non-fatal; protection may be absent.
 
-4. **No cross-platform execution** — Only Linux x86_64 can actually launch sealed agents.
+4. **Non-Linux launcher integrity check** — Footer hash verification skipped on macOS/Windows; only warning logged.
+
+5. **No cross-platform execution** — Only Linux x86_64 can actually launch sealed agents.
 
 5. **Fingerprinting is software-based** — Not remote attestation; spoofable by privileged attackers.
 

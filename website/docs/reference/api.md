@@ -61,18 +61,17 @@ Compile and seal an agent from source.
 }
 ```
 
-**Errors**:
-
-| Status | Error |
-|--------|-------|
-| 400 | `project_dir must be inside compile_dir` |
-| 400 | `invalid user_fingerprint: expected 64 hex chars` |
-| 500 | Internal compilation error |
-
 **Notes**:
 - Compilation runs asynchronously
+- Request returns `202 Accepted` immediately
+- Fingerprint validation happens during async compilation
+- Invalid fingerprints cause job to transition to `failed` state
 - Use `GET /api/v1/jobs/\{job_id\}` to check progress
-- Project must be inside configured `compile_dir`
+
+**Validation errors** (cause job to fail, not immediate 400):
+- Invalid `user_fingerprint` or `sandbox_fingerprint` format
+- Backend tool (Nuitka/PyInstaller) not installed
+- Project directory doesn't exist or outside `compile_dir`
 
 ---
 
@@ -117,7 +116,7 @@ Launch a compiled agent in a Docker sandbox.
 
 | Status | Error |
 |--------|-------|
-| 400 | `job not found` |
+| 404 | `job not found` |
 | 400 | `job is not ready for dispatch` (not in `ready` state) |
 | 500 | Docker provisioning error |
 
@@ -136,13 +135,13 @@ Get job status and details.
 
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "id": "job-1705312800-0-abc12345",
   "status": "completed",
   "project_dir": "./my_agent",
   "output_path": "/path/to/artifact",
   "error": null,
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-15T10:32:00Z",
+  "created_at": 1705312800,
+  "updated_at": 1705312920,
   "sandbox_id": "container-id-or-null",
   "result": {
     "exit_code": 0,
@@ -151,6 +150,15 @@ Get job status and details.
   }
 }
 ```
+
+**Field types**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Job ID (format: `job-<timestamp>-<sequence>-<hex>`) |
+| `status` | string | Current job state |
+| `created_at` | number | Unix timestamp (seconds since epoch) |
+| `updated_at` | number | Unix timestamp (seconds since epoch) |
 
 **Job States**:
 
@@ -180,7 +188,7 @@ Get execution results for a completed job.
 
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "job_id": "job-1705312800-0-abc12345",
   "status": "completed",
   "result": {
     "exit_code": 0,
@@ -198,12 +206,17 @@ Get execution results for a completed job.
 | `stdout` | string | Standard output |
 | `stderr` | string | Standard error |
 
+**Behavior**:
+
+- Returns `200 OK` for any existing job
+- `result` may be `null` if job hasn't completed
+- Check `status` field to determine if execution finished
+
 **Errors**:
 
 | Status | Error |
 |--------|-------|
 | 404 | `job not found` |
-| 400 | Job not yet completed |
 
 ---
 
@@ -215,9 +228,17 @@ Health check endpoint.
 
 ```json
 {
-  "status": "ok"
+  "status": "ok",
+  "jobs_count": 5
 }
 ```
+
+**Fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Health status (`"ok"`) |
+| `jobs_count` | number | Number of tracked jobs |
 
 ## NOT Implemented Endpoints
 

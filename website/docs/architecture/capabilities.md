@@ -220,6 +220,8 @@ This ensures identical environments produce identical fingerprints.
 | `/api/v1/jobs/{job_id}/results` | GET | Get execution results |
 | `/health` | GET | Health check |
 
+For complete API documentation with request/response schemas, see [API Reference](../reference/api.md).
+
 **Request/Response schemas**:
 
 `POST /api/v1/compile`:
@@ -271,6 +273,8 @@ The server API has **no built-in authentication or authorization**. Deploy behin
 ### Sandbox Integration
 
 **Current implementation**: Docker container isolation only
+
+For detailed sandbox documentation, see [Supported Sandboxes](./supported-sandboxes.md).
 
 The orchestration API provisions Docker containers with:
 

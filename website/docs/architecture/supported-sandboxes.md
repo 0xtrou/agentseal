@@ -34,6 +34,17 @@ Executes sealed agents in Docker containers with security hardening and resource
 - macOS arm64, x86_64 (Docker Desktop)
 - Windows x86_64 (WSL2 Docker)
 
+:::note Host Platform vs Execution Platform
+
+The Docker sandbox can run on macOS and Windows **hosts**, but the sealed agent itself still executes in a **Linux container**.
+
+- **Host platform**: Where the server and Docker daemon run (can be macOS/Windows)
+- **Execution platform**: Where the sealed agent binary runs (always Linux container)
+
+The sealed agent must be compiled for Linux x86_64, regardless of the host platform.
+
+:::
+
 **Actually Implemented Features**:
 
 | Feature | Status | Notes |

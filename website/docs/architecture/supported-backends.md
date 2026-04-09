@@ -114,22 +114,27 @@ seal compile \
 - Production deployments requiring minimal overhead
 - Agents with computationally intensive workloads
 
-## Backends NOT Exposed to Users
+## Backends NOT Exposed via `seal compile`
 
 ### Go Backend
 
-**Status**: Implemented internally, **NOT user-accessible**
+**Status**: Implemented internally, **NOT exposed via `seal compile` CLI**
 
-The Go backend exists in the compiler crate but is **not exposed via `seal compile` CLI**.
+The Go backend exists in the `snapfzz-seal-compiler` crate but is **not accessible through the user-facing `seal compile` command**.
 
 **Why not accessible**:
 - `seal compile` only accepts `--backend nuitka` or `--backend pyinstaller`
-- No `--backend go` option in current CLI
+- No `--backend go` option in current `seal` CLI
 - Hardcoded for internal use with `GOOS=linux`, `GOARCH=amd64`
+
+**Technical detail**:
+- The lower-level compiler crate (`snapfzz-seal-compiler`) does expose Go as a backend option
+- However, users interact with `seal compile`, not the compiler crate directly
+- An internal fallback chain (`Nuitka → PyInstaller → Go`) exists but is not user-configurable
 
 **Do NOT attempt**:
 ```bash
-# This will FAIL - go backend not exposed
+# This will FAIL - go backend not exposed in seal CLI
 seal compile --backend go --project ./agent
 ```
 
@@ -169,12 +174,12 @@ When `--backend` is omitted, defaults to `nuitka`.
 
 **Auto-detection**: NOT IMPLEMENTED
 - No automatic detection of project type
-- No fallback chain between backends
 - Manual selection required if default fails
 
-**Backend chain**: NOT IMPLEMENTED
-- No `--backend-chain` option
-- No fallback behavior
+**Backend chain**: NOT IMPLEMENTED for users
+- No `--backend-chain` CLI option
+- Internal fallback chain exists in compiler library (Nuitka → PyInstaller → Go)
+- Not user-configurable
 
 **Backend options**: NOT IMPLEMENTED
 - No `--backend-opts` passthrough
