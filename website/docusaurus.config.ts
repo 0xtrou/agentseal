@@ -32,17 +32,6 @@ const config: Config = {
           sidebarPath: './sidebars.ts',
           editUrl: 'https://github.com/0xtrou/agentseal/tree/main/website/',
         },
-        blog: {
-          showReadingTime: true,
-          feedOptions: {
-            type: ['rss', 'atom'],
-            xslt: true,
-          },
-          editUrl: 'https://github.com/0xtrou/agentseal/tree/main/website/',
-          onInlineTags: 'warn',
-          onInlineAuthors: 'warn',
-          onUntruncatedBlogPosts: 'warn',
-        },
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -57,8 +46,8 @@ const config: Config = {
     },
     docs: {
       sidebar: {
-        hideable: true,
-        autoCollapseCategories: true,
+        hideable: false,
+        autoCollapseCategories: false,
       },
     },
     navbar: {
@@ -72,9 +61,8 @@ const config: Config = {
           type: 'docSidebar',
           sidebarId: 'docsSidebar',
           position: 'left',
-          label: 'Docs',
+          label: 'Documentation',
         },
-        {to: '/blog', label: 'Changelog', position: 'left'},
         {
           href: 'https://github.com/0xtrou/agentseal',
           label: 'GitHub',
@@ -86,11 +74,15 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'Docs',
+          title: 'Documentation',
           items: [
             {
               label: 'Getting Started',
               to: '/docs/getting-started/installation',
+            },
+            {
+              label: 'Architecture',
+              to: '/docs/architecture/how-it-works',
             },
             {
               label: 'CLI Reference',
@@ -99,29 +91,33 @@ const config: Config = {
           ],
         },
         {
-          title: 'Community',
+          title: 'Security',
           items: [
             {
-              label: 'GitHub Issues',
-              href: 'https://github.com/0xtrou/agentseal/issues',
+              label: 'Threat Model',
+              to: '/docs/security/threat-model',
+            },
+            {
+              label: 'Security Audits',
+              to: '/docs/security/audits',
             },
           ],
         },
         {
-          title: 'More',
+          title: 'Community',
           items: [
-            {
-              label: 'Changelog',
-              to: '/blog',
-            },
             {
               label: 'GitHub',
               href: 'https://github.com/0xtrou/agentseal',
             },
+            {
+              label: 'Issues',
+              href: 'https://github.com/0xtrou/agentseal/issues',
+            },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Agent Seal Contributors. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Agent Seal Contributors`,
     },
     prism: {
       theme: prismThemes.github,

@@ -1,30 +1,342 @@
 /**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
+ * Agent Seal Documentation - Black/Orange Theme
+ * Professional security tool aesthetic
  */
 
-/* You can override the default Infima variables here. */
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
+  /* Primary Orange */
+  --ifm-color-primary: #FF6B00;
+  --ifm-color-primary-dark: #E85C00;
+  --ifm-color-primary-darker: #D95200;
+  --ifm-color-primary-darkest: #B84400;
+  --ifm-color-primary-light: #FF7A1A;
+  --ifm-color-primary-lighter: #FF8529;
+  --ifm-color-primary-lightest: #FF9D4D;
+  
+  /* Background */
+  --ifm-background-color: #0A0A0A;
+  --ifm-background-surface-color: #141414;
+  
+  /* Text */
+  --ifm-font-color-base: #E5E5E5;
+  --ifm-font-color-base-inverse: #0A0A0A;
+  
+  /* Code */
   --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --docusaurus-highlighted-code-line-bg: rgba(255, 107, 0, 0.15);
+  
+  /* Sidebar */
+  --ifm-menu-color: #E5E5E5;
+  --ifm-menu-color-active: #FF6B00;
+  --ifm-menu-color-background-hover: rgba(255, 107, 0, 0.1);
+  
+  /* Links */
+  --ifm-link-color: #FF6B00;
+  --ifm-link-hover-color: #FF9D4D;
+  
+  /* Borders */
+  --ifm-global-border-width: 1px;
+  --ifm-border-color: #2A2A2A;
+  
+  /* Hero */
+  --ifm-hero-background-color: #141414;
+  --ifm-hero-text-color: #E5E5E5;
+  
+  /* Navbar */
+  --ifm-navbar-background-color: #0A0A0A;
+  --ifm-navbar-shadow: 0 1px 0 0 #2A2A2A;
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
+/* Dark mode (same as light for black theme) */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --ifm-color-primary: #FF6B00;
+  --ifm-color-primary-dark: #E85C00;
+  --ifm-color-primary-darker: #D95200;
+  --ifm-color-primary-darkest: #B84400;
+  --ifm-color-primary-light: #FF7A1A;
+  --ifm-color-primary-lighter: #FF8529;
+  --ifm-color-primary-lightest: #FF9D4D;
+  
+  --ifm-background-color: #0A0A0A;
+  --ifm-background-surface-color: #141414;
+  
+  --ifm-font-color-base: #E5E5E5;
+  
+  --docusaurus-highlighted-code-line-bg: rgba(255, 107, 0, 0.2);
+}
+
+/* Light mode override - keep black background */
+[data-theme='light'] {
+  --ifm-background-color: #0A0A0A;
+  --ifm-background-surface-color: #141414;
+  --ifm-font-color-base: #E5E5E5;
+}
+
+/* Navbar styling */
+.navbar {
+  background-color: var(--ifm-navbar-background-color);
+  border-bottom: 1px solid #2A2A2A;
+}
+
+.navbar__title {
+  color: #FF6B00;
+  font-weight: 700;
+}
+
+.navbar__link {
+  color: #E5E5E5;
+}
+
+.navbar__link:hover,
+.navbar__link--active {
+  color: #FF6B00;
+}
+
+/* Sidebar styling */
+.theme-doc-sidebar-container {
+  background-color: #0A0A0A;
+}
+
+.menu__link {
+  color: #E5E5E5;
+}
+
+.menu__link:hover {
+  background-color: rgba(255, 107, 0, 0.1);
+  color: #FF6B00;
+}
+
+.menu__link--active {
+  background-color: rgba(255, 107, 0, 0.15);
+  color: #FF6B00;
+}
+
+/* Category headers */
+.menu__list-item-collapsible {
+  background-color: transparent;
+}
+
+.menu__caret {
+  color: #FF6B00;
+}
+
+/* Main content area */
+.theme-doc-markdown {
+  color: #E5E5E5;
+}
+
+/* Headers */
+h1, h2, h3, h4, h5, h6 {
+  color: #FFFFFF;
+}
+
+h1 {
+  border-bottom: 2px solid #FF6B00;
+  padding-bottom: 0.5em;
+}
+
+/* Code blocks */
+code {
+  background-color: #1A1A1A;
+  border: 1px solid #2A2A2A;
+  color: #E5E5E5;
+}
+
+/* Preformatted code */
+pre {
+  background-color: #0A0A0A !important;
+  border: 1px solid #2A2A2A;
+}
+
+/* Tables */
+table {
+  border: 1px solid #2A2A2A;
+}
+
+th {
+  background-color: #141414;
+  color: #FF6B00;
+}
+
+td {
+  border-color: #2A2A2A;
+}
+
+tr:hover {
+  background-color: rgba(255, 107, 0, 0.05);
+}
+
+/* Cards/Boxes */
+.card {
+  background-color: #141414;
+  border: 1px solid #2A2A2A;
+}
+
+/* Admonitions */
+.admonition {
+  background-color: #141414;
+  border-left: 4px solid #FF6B00;
+}
+
+.admonition-heading {
+  color: #FF6B00;
+}
+
+/* Info admonition */
+.admonition-info {
+  border-left-color: #FF6B00;
+}
+
+/* Warning admonition */
+.admonition-warning {
+  border-left-color: #FFB800;
+}
+
+/* Danger admonition */
+.admonition-danger {
+  border-left-color: #FF3B3B;
+}
+
+/* Footer */
+.footer {
+  background-color: #0A0A0A;
+  border-top: 1px solid #2A2A2A;
+}
+
+.footer__link-item {
+  color: #E5E5E5;
+}
+
+.footer__link-item:hover {
+  color: #FF6B00;
+}
+
+/* Buttons */
+.button--primary {
+  background-color: #FF6B00;
+  border-color: #FF6B00;
+}
+
+.button--primary:hover {
+  background-color: #E85C00;
+  border-color: #E85C00;
+}
+
+.button--secondary {
+  background-color: transparent;
+  border-color: #FF6B00;
+  color: #FF6B00;
+}
+
+.button--secondary:hover {
+  background-color: rgba(255, 107, 0, 0.1);
+}
+
+/* Pagination */
+.pagination-nav__link {
+  background-color: #141414;
+  border-color: #2A2A2A;
+  color: #E5E5E5;
+}
+
+.pagination-nav__link:hover {
+  border-color: #FF6B00;
+  color: #FF6B00;
+}
+
+/* Breadcrumbs */
+.breadcrumbs__link {
+  color: #999;
+}
+
+.breadcrumbs__link:hover {
+  color: #FF6B00;
+}
+
+.breadcrumbs__item--active .breadcrumbs__link {
+  color: #FF6B00;
+}
+
+/* TOC (Table of Contents) */
+.toc {
+  border-left: 2px solid #2A2A2A;
+}
+
+.toc__link {
+  color: #999;
+}
+
+.toc__link:hover,
+.toc__link--active {
+  color: #FF6B00;
+}
+
+/* Tabs */
+.tabs__item {
+  color: #E5E5E5;
+}
+
+.tabs__item:hover {
+  background-color: rgba(255, 107, 0, 0.1);
+}
+
+.tabs__item--active {
+  background-color: rgba(255, 107, 0, 0.15);
+  color: #FF6B00;
+  border-bottom-color: #FF6B00;
+}
+
+/* Search */
+[role='search'] input {
+  background-color: #141414;
+  border-color: #2A2A2A;
+  color: #E5E5E5;
+}
+
+/* Pill badges */
+.badge--primary {
+  background-color: #FF6B00;
+}
+
+.badge--secondary {
+  background-color: #2A2A2A;
+  color: #E5E5E5;
+}
+
+/* Hero banner */
+.hero--primary {
+  background-color: #141414;
+  color: #E5E5E5;
+}
+
+.hero__title {
+  color: #FFFFFF;
+}
+
+.hero__subtitle {
+  color: #999;
+}
+
+/* Logo styling */
+.navbar__logo {
+  filter: brightness(0) invert(1);
+}
+
+/* Animation for smooth transitions */
+* {
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+/* Prevent theme toggle (enforce black theme) */
+.theme-toggle {
+  display: none;
+}
+
+/* Ensure all content pages use dark theme */
+.main-wrapper {
+  background-color: #0A0A0A;
+}
+
+.docusaurus-theme-toggle {
+  display: none;
 }
