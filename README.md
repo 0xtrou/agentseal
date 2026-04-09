@@ -118,10 +118,10 @@ Current target runtimes:
 
 ### Protected against
 
-- Casual payload extraction from static binaries
+- Casual payload extraction from static binaries (note: embedded master secret is recoverable via known marker scan — see "Not protected against")
 - Running encrypted payload in an unrelated sandbox environment
 - Direct exposure of provider API keys from shipped agent artifacts (encrypted at rest; master secret is embedded in assembled binaries)
-- Payload tampering: Ed25519 signatures (when present) verify builder identity and payload integrity; unsigned payloads are rejected at launch
+- Payload tampering: Ed25519 signatures (when present) verify builder identity and payload integrity; unsigned payloads are rejected at launch. Tamper hash verification is Linux-only — skipped on macOS/Windows.
 
 ### Not protected against
 
@@ -130,6 +130,7 @@ Current target runtimes:
 - Full runtime memory extraction by privileged adversaries
 - **Local process environment inspection**: when using env var fallback for master secret delivery, the secret is visible in `/proc/[pid]/environ` to root and same-UID processes. The embedded-secret path avoids this.
 - **Server API exposure**: the orchestration server is unauthenticated and must remain bound to `127.0.0.1`. Exposure beyond localhost allows unauthenticated compile/dispatch/result access.
+- **Static binary analysis**: the master secret is embedded in assembled binaries using a known marker pattern (`ASL_SECRET_MRK_v1...`). An attacker with the binary can locate this marker and extract the secret, then decrypt the payload. The protection is against casual inspection, not determined reverse engineering.
 
 In short: Agent Seal raises attacker cost and narrows abuse windows; it is not a replacement for host trust or attestation systems.
 
