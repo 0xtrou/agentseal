@@ -1,9 +1,9 @@
 //! Sandbox backend abstraction for agent execution environments.
 
+use async_trait::async_trait;
 use snapfzz_seal_core::error::SealError;
 use snapfzz_seal_core::types::ExecutionResult;
 use snapfzz_seal_fingerprint::model::RuntimeKind;
-use async_trait::async_trait;
 use std::collections::HashMap;
 use std::path::Path;
 

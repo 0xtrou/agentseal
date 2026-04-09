@@ -1,11 +1,11 @@
 use crate::embed::{embed_master_secret, embed_tamper_hash};
+use sha2::{Digest, Sha256};
 use snapfzz_seal_core::{
     derive::derive_env_key,
     error::SealError,
     payload::{pack_payload_with_mode, write_footer},
     types::{AgentMode, LAUNCHER_PAYLOAD_SENTINEL, PayloadFooter},
 };
-use sha2::{Digest, Sha256};
 use std::{io::Cursor, path::PathBuf};
 
 pub struct AssembleConfig {

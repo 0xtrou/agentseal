@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use snapfzz_seal_compiler::{Cli as CompilerCli, CliBackend};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -13,6 +12,7 @@ use axum::{
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use snapfzz_seal_compiler::{Cli as CompilerCli, CliBackend};
 use tracing::debug;
 
 use crate::sandbox::{SandboxConfig, copy_into_sandbox, exec_in_sandbox};
@@ -460,12 +460,12 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use snapfzz_seal_core::types::ExecutionResult;
     use axum::{
         body::Body,
         http::{Request, StatusCode},
     };
     use serde_json::Value;
+    use snapfzz_seal_core::types::ExecutionResult;
     use tower::ServiceExt;
 
     use crate::{

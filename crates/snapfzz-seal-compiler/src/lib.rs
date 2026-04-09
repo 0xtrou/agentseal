@@ -3,8 +3,8 @@ pub mod backend;
 pub mod compile;
 pub mod embed;
 
-use snapfzz_seal_core::{error::SealError, secret::generate_master_secret, types::AgentMode};
 use clap::{Parser, ValueEnum};
+use snapfzz_seal_core::{error::SealError, secret::generate_master_secret, types::AgentMode};
 use std::{path::PathBuf, str::FromStr};
 
 use crate::backend::{CompileBackend, GoBackend, NuitkaBackend, PyInstallerBackend};

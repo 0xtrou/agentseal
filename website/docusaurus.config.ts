@@ -125,6 +125,10 @@ const config: Config = {
       additionalLanguages: ['rust', 'toml', 'bash'],
     },
   } satisfies Preset.ThemeConfig,
+  
+  scripts: [
+    '/js/expand-sidebar.js',
+  ],
 };
 
 export default config;

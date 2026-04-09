@@ -17,7 +17,8 @@ pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         .block_on(async {
             tokio::fs::create_dir_all(&cli.compile_dir).await?;
             tokio::fs::create_dir_all(&cli.output_dir).await?;
-            let state = snapfzz_seal_server::state::ServerState::new(cli.compile_dir, cli.output_dir);
+            let state =
+                snapfzz_seal_server::state::ServerState::new(cli.compile_dir, cli.output_dir);
             let app = snapfzz_seal_server::create_app(state);
             let addr: std::net::SocketAddr = cli.bind.parse()?;
             let listener = tokio::net::TcpListener::bind(addr).await?;

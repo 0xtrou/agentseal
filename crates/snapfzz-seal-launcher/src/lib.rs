@@ -11,6 +11,8 @@ mod seccomp;
 
 use std::io::Cursor;
 
+use clap::{Parser, ValueEnum};
+pub use memfd_exec::{ExecConfig, InteractiveHandle, KernelMemfdOps, MemfdExecutor};
 #[cfg(target_os = "linux")]
 use snapfzz_seal_core::tamper;
 use snapfzz_seal_core::{
@@ -23,8 +25,6 @@ use snapfzz_seal_core::{
 use snapfzz_seal_fingerprint::{
     FingerprintCollector, FingerprintSnapshot, canonicalize_ephemeral, canonicalize_stable,
 };
-use clap::{Parser, ValueEnum};
-pub use memfd_exec::{ExecConfig, InteractiveHandle, KernelMemfdOps, MemfdExecutor};
 use tracing_subscriber::EnvFilter;
 use zeroize::{Zeroize, Zeroizing};
 

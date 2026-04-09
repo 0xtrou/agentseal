@@ -3,11 +3,11 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use snapfzz_seal_core::{error::SealError, types::ExecutionResult};
-use snapfzz_seal_fingerprint::model::{FingerprintSnapshot, RuntimeKind, SourceValue, Stability};
 use async_trait::async_trait;
 use rand::{RngCore, rngs::OsRng};
 use regex::Regex;
+use snapfzz_seal_core::{error::SealError, types::ExecutionResult};
+use snapfzz_seal_fingerprint::model::{FingerprintSnapshot, RuntimeKind, SourceValue, Stability};
 use tokio::process::Command;
 
 use super::{SandboxBackend, SandboxConfig, SandboxHandle};

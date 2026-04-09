@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use snapfzz_seal_core::{error::SealError, types::ExecutionResult};
 use nix::errno::Errno;
 use nix::sys::signal::{self, Signal};
 use nix::sys::wait::{WaitStatus, waitpid};
 use nix::unistd::{ForkResult, Pid, fork, pipe};
+use snapfzz_seal_core::{error::SealError, types::ExecutionResult};
 
 pub trait MemfdOps: Send + Sync {
     fn create_memfd(&self, name: &str) -> Result<OwnedFd, SealError>;
@@ -1383,7 +1383,10 @@ mod tests {
 
         assert_eq!(heartbeat_timeout_from_env(), Duration::from_secs(7));
 
-        restore_env_var("SNAPFZZ_SEAL_INTERACTIVE_HEARTBEAT_SECS", previous.as_deref());
+        restore_env_var(
+            "SNAPFZZ_SEAL_INTERACTIVE_HEARTBEAT_SECS",
+            previous.as_deref(),
+        );
     }
 
     #[test]
@@ -1411,7 +1414,10 @@ mod tests {
         assert!(result.stdout.is_empty());
         assert!(result.stderr.is_empty());
 
-        restore_env_var("SNAPFZZ_SEAL_INTERACTIVE_HEARTBEAT_SECS", previous.as_deref());
+        restore_env_var(
+            "SNAPFZZ_SEAL_INTERACTIVE_HEARTBEAT_SECS",
+            previous.as_deref(),
+        );
     }
 
     #[test]
