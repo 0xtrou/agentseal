@@ -86,4 +86,4 @@ See [Threat Model](https://0xtrou.github.io/agentseal/security/threat-model.html
 
 ## License
 
-MIT OR Apache-2.0
+MIT License — See [LICENSE](LICENSE) for details.

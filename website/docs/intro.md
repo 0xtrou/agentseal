@@ -192,4 +192,14 @@ See [Architecture](./architecture/how-it-works) for detailed technical documenta
 
 ## License
 
-MIT OR Apache-2.0
+MIT License — See [LICENSE](https://github.com/0xtrou/agentseal/blob/main/LICENSE) for full text.
+
+## Contributing
+
+We welcome contributions! See [CONTRIBUTING.md](https://github.com/0xtrou/agentseal/blob/main/CONTRIBUTING.md) for guidelines.
+
+Key requirements:
+- All code must maintain **≥90% test coverage**
+- Follow Rust formatting (`cargo fmt`)
+- Pass all clippy warnings (`cargo clippy`)
+- Document all public APIs
