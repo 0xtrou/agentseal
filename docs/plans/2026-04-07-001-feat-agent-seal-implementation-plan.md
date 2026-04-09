@@ -1,12 +1,12 @@
 ---
-title: "feat: Agent Seal — Encrypted Sandbox-Bound Agent Delivery System"
+title: "feat: Snapfzz Seal — Encrypted Sandbox-Bound Agent Delivery System"
 type: feat
 status: active
 date: 2026-04-07
 origin: handoff (design session — 2026-04-07)
 ---
 
-# Agent Seal Implementation Plan
+# Snapfzz Seal Implementation Plan
 
 ## Overview
 
@@ -19,7 +19,7 @@ Organizations need to run AI agents in isolated sandboxes (Docker, Firecracker, 
 - Risking the agent binary being executed outside its intended sandbox
 - Leaving plaintext executables on disk
 
-Agent Seal solves this by encrypting the compiled agent binary with a key derived from the sandbox's fingerprint + a master secret. The launcher decrypts directly into kernel memory (memfd) and executes via fexecve — zero disk footprint.
+Snapfzz Seal solves this by encrypting the compiled agent binary with a key derived from the sandbox's fingerprint + a master secret. The launcher decrypts directly into kernel memory (memfd) and executes via fexecve — zero disk footprint.
 
 ## Requirements Trace
 
@@ -67,14 +67,14 @@ Agent Seal solves this by encrypting the compiled agent binary with a key derive
 
 ## Key Technical Decisions
 
-- **Master secret via embedded random key** (NOT self-hash): A random 256-bit key generated at compile time by agent-seal-compiler and embedded via `include_bytes!`. Self-hash (SHA-256 of own ELF) is used only as tamper detection, not as the root secret. Rationale: Self-hash breaks on every recompilation/strip, making operational updates impossible. Oracle validated this.
+- **Master secret via embedded random key** (NOT self-hash): A random 256-bit key generated at compile time by snapfzz-seal-compiler and embedded via `include_bytes!`. Self-hash (SHA-256 of own ELF) is used only as tamper detection, not as the root secret. Rationale: Self-hash breaks on every recompilation/strip, making operational updates impossible. Oracle validated this.
 - **Custom memfd executor on `memfd` crate**: Build internal executor using lucab/memfd-rs for memfd creation + sealing, then direct fexecve via nix crate. Rejected memfd-exec (bugs, no sealing, no chunked writes). Gives us chunked decrypt→write, SealWrite+SealSeal, controlled flags.
 - **Streaming encryption via aead-stream**: EncryptorBE32/DecryptorBE32 with 64KB chunks. Max payload ~64GB. Pure Rust with AES-NI acceleration. Avoids holding 500MB in memory.
 - **Launcher as musl static binary**: `x86_64-unknown-linux-musl` target. Runs on arbitrary sandboxes with zero runtime deps. All other crates use default glibc target.
 - **Compiler does NOT Cargo-depend on launcher**: The compiler reads the launcher binary from a known path/env var (build-time dependency, not Cargo dependency). Avoids circular build complexity and keeps cross-compilation clean (compiler=glibc, launcher=musl).
 - **Fork+wait for result capture**: Launcher forks before fexecve, parent waits and captures child stdout/stderr + exit code. Simplest approach that doesn't require modifying the agent.
 - **85% coverage gate** (not 90%): 90% is achievable but 85% is the CI gate. Expect 95% on crypto logic, 70-80% on syscall code, with integration tests closing the gap. Use cargo-llvm-cov + nextest (faster and more accurate than tarpaulin on async code).
-- **Dual-layer fingerprint KDF**: K_env = HKDF(master, "agent-seal/env/v1", stable_hash || user_fp) for restart-survivable binding; K_session = HKDF(K_env, "agent-seal/session/v1", ephemeral_hash) for single-use session binding.
+- **Dual-layer fingerprint KDF**: K_env = HKDF(master, "snapfzz-seal/env/v1", stable_hash || user_fp) for restart-survivable binding; K_session = HKDF(K_env, "snapfzz-seal/session/v1", ephemeral_hash) for single-use session binding.
 - **Self-delete before fexecve**: Call unlink on `/proc/self/exe` before fexecve (after exec, `/proc/self/exe` points to memfd). Gracefully skip on read-only overlayfs.
 - **Anti-extraction**: prctl(PR_SET_DUMPABLE, 0) + PTRACE_TRACEME + memfd sealing + XOR key obfuscation. Accepted as raising the bar, not providing real security against determined attackers.
 
@@ -98,7 +98,7 @@ Agent Seal solves this by encrypting the compiled agent binary with a key derive
 
 ```
                          ┌─────────────────┐
-                         │  agent-seal-    │
+                         │  snapfzz-seal-    │
                          │    server       │
                          │  (orchestration)│
                          └────────┬────────┘
@@ -106,7 +106,7 @@ Agent Seal solves this by encrypting the compiled agent binary with a key derive
                     ┌─────────────┼─────────────┐
                     ▼             ▼              ▼
           ┌──────────────┐ ┌──────────┐ ┌──────────────┐
-          │ agent-seal-  │ │ agent-   │ │ agent-seal-  │
+          │ snapfzz-seal-  │ │ agent-   │ │ snapfzz-seal-  │
           │   compiler   │ │ seal-    │ │    proxy     │
           │ (Python→ELF  │ │  server  │ │ (LLM API     │
           │  + encrypt)  │ │ (infra)  │ │  routing)    │
@@ -125,7 +125,7 @@ Agent Seal solves this by encrypting the compiled agent binary with a key derive
     └──────────────────────┘
                  │
     ┌────────────▼───────────┐
-    │  agent-seal-core       │
+    │  snapfzz-seal-core       │
     │  ┌──────────────────┐  │
     │  │ master_secret    │  │
     │  │ HKDF derive      │  │
@@ -135,7 +135,7 @@ Agent Seal solves this by encrypting the compiled agent binary with a key derive
     └────────────────────────┘
                  │
     ┌────────────▼───────────┐
-    │ agent-seal-fingerprint │
+    │ snapfzz-seal-fingerprint │
     │  ┌──────────────────┐  │
     │  │ stable (machine- │  │
     │  │   id, hostname,  │  │
@@ -178,13 +178,13 @@ master_secret (256-bit, embedded at compile time)
     ├─► HKDF-SHA256(
     │       IKM = stable_fingerprint_hash || user_fingerprint,
     │       salt = master_secret,
-    │       info = "agent-seal/env/v1"
+    │       info = "snapfzz-seal/env/v1"
     │   ) → K_env (256-bit encryption key)
     │
     └─► HKDF-SHA256(
             IKM = ephemeral_fingerprint_hash,
             salt = K_env,
-            info = "agent-seal/session/v1"
+            info = "snapfzz-seal/session/v1"
         ) → K_session (discarded — K_env is the actual encryption key)
 
 Note: K_session is available for optional single-use binding. MVP uses K_env only.
@@ -264,8 +264,8 @@ Note: K_session is available for optional single-use binding. MVP uses K_env onl
 - Error path: Invalid magic bytes → SealError::InvalidPayload
 
 **Verification:**
-- `cargo test -p agent-seal-core` passes
-- `cargo clippy -p agent-seal-core` clean
+- `cargo test -p snapfzz-seal-core` passes
+- `cargo clippy -p snapfzz-seal-core` clean
 
 ---
 
@@ -351,8 +351,8 @@ Note: K_session is available for optional single-use binding. MVP uses K_env onl
 - Test: `crates/core/src/derive.rs`
 
 **Approach:**
-- `derive_env_key(master_secret, stable_hash, user_fingerprint) -> [u8; 32]`: HKDF-SHA256 extract+expand, salt=master_secret, info="agent-seal/env/v1", IKM=stable_hash||user_fingerprint
-- `derive_session_key(env_key, ephemeral_hash) -> [u8; 32]`: HKDF-SHA256 extract+expand, salt=env_key, info="agent-seal/session/v1", IKM=ephemeral_hash
+- `derive_env_key(master_secret, stable_hash, user_fingerprint) -> [u8; 32]`: HKDF-SHA256 extract+expand, salt=master_secret, info="snapfzz-seal/env/v1", IKM=stable_hash||user_fingerprint
+- `derive_session_key(env_key, ephemeral_hash) -> [u8; 32]`: HKDF-SHA256 extract+expand, salt=env_key, info="snapfzz-seal/session/v1", IKM=ephemeral_hash
 - Input validation: all inputs must be exactly 32 bytes (pre-hashed by caller)
 - Output zeroized via ZeroizeOnDrop wrapper
 
@@ -461,7 +461,7 @@ Note: K_session is available for optional single-use binding. MVP uses K_env onl
 - Test: `crates/launcher/tests/integration.rs`
 
 **Approach:**
-- CLI via clap: `agent-seal-launcher --payload <path> --fingerprint-mode <strict|compatible> --user-fingerprint <hex>`
+- CLI via clap: `snapfzz-seal-launcher --payload <path> --fingerprint-mode <strict|compatible> --user-fingerprint <hex>`
 - Pipeline: 1) Read payload from stdin or file, 2) Parse header (validate magic + version), 3) verify_tamper (compare embedded hash), 4) collect fingerprint, 5) derive env key, 6) fingerprint mismatch check (try decrypt header chunk — if auth fails, return clear "fingerprint mismatch" error instead of raw AES error), 7) decrypt full payload, 8) apply anti-debug protections, 9) self-delete binary, 10) fork + memfd exec, 11) parent waits + captures results, 12) write results to stdout (JSON: {exit_code, stdout, stderr})
 - Result output as JSON to stdout for programmatic consumption by the server
 - Master secret and tamper hash embedded by compiler at build time via build.rs or include_bytes!
@@ -502,7 +502,7 @@ Note: K_session is available for optional single-use binding. MVP uses K_env onl
 - Backend selection configurable via CLI flag, default Nuitka
 - Output: single ELF binary at known path
 - Timeout handling (compilation can take 5-30 minutes for complex agents)
-- Not a Cargo dependency on launcher — reads launcher binary from env var `AGENT_SEAL_LAUNCHER_PATH`
+- Not a Cargo dependency on launcher — reads launcher binary from env var `SNAPFZZ_SEAL_LAUNCHER_PATH`
 
 **Test scenarios:**
 - Happy path (integration): Compile a trivial Python script → produces ELF binary
@@ -535,7 +535,7 @@ Note: K_session is available for optional single-use binding. MVP uses K_env onl
 **Approach:**
 - `assemble.rs`: `build_sealed_binary(agent_elf_path, launcher_path, master_secret, stable_fingerprint_hash, user_fingerprint) -> Result<Vec<u8>>`. Steps: 1) Generate encryption key via derive_env_key, 2) Encrypt agent ELF via encrypt_stream, 3) Pack into payload format (header + stream header + chunks + footer), 4) Append payload to launcher binary
 - `embed.rs`: `embed_master_secret(launcher_path, secret) -> Result<Vec<u8>>` patches the launcher binary to embed the master secret at a known offset (marker-based: scan for a specific 16-byte marker pattern, replace with secret). Also embeds the tamper detection hash.
-- CLI: `agent-seal-compiler build --project <dir> --user-fingerprint <hex> --sandbox-fingerprint <hex|auto> --output <path>`
+- CLI: `snapfzz-seal-compiler build --project <dir> --user-fingerprint <hex> --sandbox-fingerprint <hex|auto> --output <path>`
 - Auto mode: if sandbox-fingerprint=auto, generates a placeholder key (actual binding happens at runtime in the launcher)
 
 **Test scenarios:**
@@ -761,15 +761,15 @@ Unit 1 (workspace)
 ## Crate Dependency Graph (Cargo)
 
 ```
-agent-seal-core (lib)         ← no workspace deps, pure Rust
+snapfzz-seal-core (lib)         ← no workspace deps, pure Rust
   ↑
-agent-seal-fingerprint (lib)  ← core
+snapfzz-seal-fingerprint (lib)  ← core
   ↑
-agent-seal-launcher (bin)     ← core, fingerprint (musl static)
+snapfzz-seal-launcher (bin)     ← core, fingerprint (musl static)
   
-agent-seal-compiler (bin)     ← core, fingerprint (glibc, reads launcher binary from env)
-agent-seal-proxy (bin)        ← core (glibc)
-agent-seal-server (bin)       ← compiler (lib API), proxy (glibc)
+snapfzz-seal-compiler (bin)     ← core, fingerprint (glibc, reads launcher binary from env)
+snapfzz-seal-proxy (bin)        ← core (glibc)
+snapfzz-seal-server (bin)       ← compiler (lib API), proxy (glibc)
 ```
 
 ## System-Wide Impact
@@ -796,7 +796,7 @@ agent-seal-server (bin)       ← compiler (lib API), proxy (glibc)
 
 - README is comprehensive (architecture, encryption design, fingerprinting, threat model, usage, crate overview)
 - Each crate has doc comments on public API
-- Threat model documented in README: what Agent Seal protects against, what it doesn't
+- Threat model documented in README: what Snapfzz Seal protects against, what it doesn't
 - Operational notes: launcher is musl static, all other crates glibc; requires Linux 3.17+ for memfd
 - Build requirements: Rust stable, musl-tools, Nuitka (or PyInstaller), Python 3.10+
 

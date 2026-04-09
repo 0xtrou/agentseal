@@ -2,13 +2,13 @@
 sidebar_position: 1
 ---
 
-# Agent Seal
+# Snapfzz Seal
 
 **Encrypted, sandbox-bound agent delivery system for Linux.**
 
-Agent Seal compiles AI agents into sealed binaries that bind decryption to runtime environment fingerprints, execute entirely from memory, and verify builder signatures before launch.
+Snapfzz Seal compiles AI agents into sealed binaries that bind decryption to runtime environment fingerprints, execute entirely from memory, and verify builder signatures before launch.
 
-## Why Agent Seal Exists
+## Why Snapfzz Seal Exists
 
 Deploying AI agents in production presents unique security challenges that traditional containerization and code signing cannot address:
 
@@ -22,9 +22,9 @@ Deploying AI agents in production presents unique security challenges that tradi
 
 **Supply chain uncertainty** — How do you verify that a binary was built by your CI/CD pipeline and not tampered with during distribution?
 
-### What Agent Seal Provides
+### What Snapfzz Seal Provides
 
-Agent Seal addresses these problems through cryptographic binding and runtime enforcement:
+Snapfzz Seal addresses these problems through cryptographic binding and runtime enforcement:
 
 | Problem | Solution |
 |---------|----------|
@@ -35,7 +35,7 @@ Agent Seal addresses these problems through cryptographic binding and runtime en
 
 ## How It Works
 
-Agent Seal implements a three-phase security model:
+Snapfzz Seal implements a three-phase security model:
 
 ### Phase 1: Compile & Encrypt
 
@@ -84,9 +84,9 @@ The `seal launch` command:
 4. Decrypts the payload entirely in memory
 5. Executes the agent without writing to disk
 
-## What Agent Seal Protects Against
+## What Snapfzz Seal Protects Against
 
-Agent Seal raises the cost of various attacks:
+Snapfzz Seal raises the cost of various attacks:
 
 | Attack Vector | Protection Level |
 |---------------|------------------|
@@ -98,18 +98,18 @@ Agent Seal raises the cost of various attacks:
 | Root-level host compromise | **Not protected** — Attacker can read decryption key from memory |
 | Physical hardware tampering | **Not protected** — Requires hardware attestation |
 
-**Important**: Agent Seal is a cost-raising measure, not a perfect security boundary. It significantly raises the bar for attackers but cannot prevent all attacks. See [Threat Model](./security/threat-model) for detailed analysis.
+**Important**: Snapfzz Seal is a cost-raising measure, not a perfect security boundary. It significantly raises the bar for attackers but cannot prevent all attacks. See [Threat Model](./security/threat-model) for detailed analysis.
 
-## When To Use Agent Seal
+## When To Use Snapfzz Seal
 
-Agent Seal is appropriate when:
+Snapfzz Seal is appropriate when:
 
 - **Deploying AI agents with embedded secrets** — API keys, database credentials, internal tokens
 - **Distributing binaries to untrusted environments** — Customer machines, edge devices, multi-tenant infrastructure
 - **Enforcing runtime binding** — Ensuring binaries only execute in designated environments
 - **Preventing casual key extraction** — Raising the bar beyond `strings binary | grep API_KEY`
 
-Agent Seal is **not** appropriate when:
+Snapfzz Seal is **not** appropriate when:
 
 - You need hardware-level attestation (use TPM/SGX instead)
 - You're protecting against nation-state adversaries with physical access
@@ -156,7 +156,7 @@ Get started in 5 minutes:
 
 ```bash
 # Install
-cargo install --path crates/agent-seal
+cargo install --path crates/snapfzz-seal
 
 # Generate signing keys
 seal keygen
@@ -169,7 +169,7 @@ seal compile \
   --output ./agent.sealed
 
 # Sign the binary
-seal sign --key ~/.agent-seal/keys/key --binary ./agent.sealed
+seal sign --key ~/.snapfzz-seal/keys/key --binary ./agent.sealed
 
 # Launch on target machine
 seal launch --payload ./agent.sealed \
@@ -180,23 +180,23 @@ See [Installation](./getting-started/installation) for detailed setup instructio
 
 ## Architecture Overview
 
-Agent Seal consists of three main crates:
+Snapfzz Seal consists of three main crates:
 
 | Crate | Purpose |
 |-------|---------|
-| `agent-seal` | CLI tool for compile, sign, launch operations |
-| `agent-seal-core` | Encryption, fingerprinting, signing primitives |
-| `agent-seal-launcher` | Runtime decryption and execution engine |
+| `snapfzz-seal` | CLI tool for compile, sign, launch operations |
+| `snapfzz-seal-core` | Encryption, fingerprinting, signing primitives |
+| `snapfzz-seal-launcher` | Runtime decryption and execution engine |
 
 See [Architecture](./architecture/how-it-works) for detailed technical documentation.
 
 ## License
 
-MIT License — See [LICENSE](https://github.com/0xtrou/agentseal/blob/main/LICENSE) for full text.
+MIT License — See [LICENSE](https://github.com/0xtrou/snapfzz-seal/blob/main/LICENSE) for full text.
 
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](https://github.com/0xtrou/agentseal/blob/main/CONTRIBUTING.md) for guidelines.
+We welcome contributions! See [CONTRIBUTING.md](https://github.com/0xtrou/snapfzz-seal/blob/main/CONTRIBUTING.md) for guidelines.
 
 Key requirements:
 - All code must maintain **≥90% test coverage**

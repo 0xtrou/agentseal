@@ -1,6 +1,6 @@
-# Contributing to Agent Seal
+# Contributing to Snapfzz Seal
 
-Thank you for your interest in contributing to Agent Seal! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Snapfzz Seal! This document provides guidelines and instructions for contributing.
 
 ## Table of Contents
 
@@ -28,8 +28,8 @@ This project follows the [Rust Code of Conduct](https://www.rust-lang.org/polici
 ### Clone and Build
 
 ```bash
-git clone https://github.com/0xtrou/agentseal.git
-cd agentseal
+git clone https://github.com/0xtrou/snapfzz-seal.git
+cd snapfzz-seal
 cargo build
 ```
 
@@ -164,7 +164,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 /// # Example
 ///
 /// ```rust
-/// use agent_seal_core::encrypt;
+/// use snapfzz_seal_core::encrypt;
 ///
 /// let plaintext = b"secret data";
 /// let fp = b"user-fingerprint";
@@ -273,16 +273,16 @@ git rebase origin/main
 
 ## Security Considerations
 
-Agent Seal is a security-critical project. When contributing:
+Snapfzz Seal is a security-critical project. When contributing:
 
 ### Security-Sensitive Areas
 
 Changes to these areas require extra scrutiny:
 
-- Cryptographic operations (`crates/agent-seal-core/src/encrypt.rs`)
-- Key derivation (`crates/agent-seal-core/src/fingerprint.rs`)
-- Signature verification (`crates/agent-seal-core/src/signature.rs`)
-- Seccomp filters (`crates/agent-seal-launcher/src/seccomp.rs`)
+- Cryptographic operations (`crates/snapfzz-seal-core/src/encrypt.rs`)
+- Key derivation (`crates/snapfzz-seal-core/src/fingerprint.rs`)
+- Signature verification (`crates/snapfzz-seal-core/src/signature.rs`)
+- Seccomp filters (`crates/snapfzz-seal-launcher/src/seccomp.rs`)
 - Memory handling (any `unsafe` code)
 
 ### Reporting Security Issues
@@ -313,4 +313,4 @@ Instead, email security concerns to the maintainers privately. Include:
 
 ## License
 
-By contributing to Agent Seal, you agree that your contributions will be licensed under the MIT License.
+By contributing to Snapfzz Seal, you agree that your contributions will be licensed under the MIT License.

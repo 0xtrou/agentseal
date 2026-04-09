@@ -1,0 +1,26 @@
+[package]
+name = "snapfzz-seal"
+version = "0.1.0"
+edition = "2024"
+description = "Snapfzz Seal — encrypted sandbox-bound agent delivery"
+license = "MIT"
+rust-version = "1.85"
+
+[[bin]]
+name = "seal"
+path = "src/main.rs"
+
+[dependencies]
+snapfzz-seal-core = { path = "../snapfzz-seal-core" }
+snapfzz-seal-compiler = { path = "../snapfzz-seal-compiler" }
+snapfzz-seal-launcher = { path = "../snapfzz-seal-launcher" }
+snapfzz-seal-server = { path = "../snapfzz-seal-server" }
+snapfzz-seal-fingerprint = { path = "../snapfzz-seal-fingerprint" }
+clap = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+axum = { workspace = true }
+hex = { workspace = true }

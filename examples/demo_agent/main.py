@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Demo agent for Agent Seal pipeline demonstration."""
+"""Demo agent for Snapfzz Seal pipeline demonstration."""
 
 import os
 import sys
 import json
 import urllib.request
 
-API_KEY = os.environ.get("AGENT_SEAL_API_KEY", "")
-API_BASE = os.environ.get("AGENT_SEAL_API_BASE", "https://api.openai.com")
-MODEL = os.environ.get("AGENT_SEAL_MODEL", "gpt-4o-mini")
+API_KEY = os.environ.get("SNAPFZZ_SEAL_API_KEY", "")
+API_BASE = os.environ.get("SNAPFZZ_SEAL_API_BASE", "https://api.openai.com")
+MODEL = os.environ.get("SNAPFZZ_SEAL_MODEL", "gpt-4o-mini")
 
 
 def call_llm(prompt: str) -> str:
     if not API_KEY:
-        return "No API key configured. Set AGENT_SEAL_API_KEY."
+        return "No API key configured. Set SNAPFZZ_SEAL_API_KEY."
     req = urllib.request.Request(
         f"{API_BASE}/v1/chat/completions",
         data=json.dumps(
@@ -39,7 +39,7 @@ def call_llm(prompt: str) -> str:
 
 def main():
     prompt = os.environ.get(
-        "AGENT_PROMPT", "Say 'Agent Seal works!' in exactly those words."
+        "AGENT_PROMPT", "Say 'Snapfzz Seal works!' in exactly those words."
     )
     result = call_llm(prompt)
     print(result, file=sys.stderr)

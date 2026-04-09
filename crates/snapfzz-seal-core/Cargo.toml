@@ -1,0 +1,21 @@
+[package]
+name = "snapfzz-seal-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+hmac = "0.12"
+subtle = "2"
+aes-gcm = { workspace = true }
+aead = { workspace = true }
+aead-stream = { workspace = true }
+hkdf = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+hex = { workspace = true }
+tracing = { workspace = true }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }

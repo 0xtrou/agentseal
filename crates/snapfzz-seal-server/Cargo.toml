@@ -1,0 +1,24 @@
+[package]
+name = "snapfzz-seal-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+snapfzz-seal-core = { path = "../snapfzz-seal-core" }
+snapfzz-seal-compiler = { path = "../snapfzz-seal-compiler" }
+snapfzz-seal-fingerprint = { path = "../snapfzz-seal-fingerprint" }
+axum = { workspace = true }
+axum-extra = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+async-trait = "0.1"
+regex = "1"

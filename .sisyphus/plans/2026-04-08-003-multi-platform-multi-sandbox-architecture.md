@@ -2,13 +2,13 @@
 
 **Status**: Specification  
 **Date**: April 8, 2026  
-**Predecessor**: v0.2 implementation plan (`.sisyphus/plans/2026-04-08-002-v02-agent-seal-implementation-plan.md`)
+**Predecessor**: v0.2 implementation plan (`.sisyphus/plans/2026-04-08-002-v02-snapfzz-seal-implementation-plan.md`)
 
 ---
 
 ## Goal
 
-Evolve Agent Seal from its current single-language, single-sandbox design to support:
+Evolve Snapfzz Seal from its current single-language, single-sandbox design to support:
 
 1. **Multiple compile backends**: Python (Nuitka/PyInstaller), Go, Node.js, Rust, and pre-built binaries
 2. **Multiple sandbox targets**: Docker, Firecracker microVMs, with a trait-based abstraction for future targets
@@ -19,7 +19,7 @@ All while keeping the core value proposition intact: **one sealed binary, zero c
 ## Design Principles
 
 - **Three orthogonal trait axes**: sandbox provisioning, language compilation, platform execution — each independently shippable
-- **Core stays frozen**: `agent-seal-core` (crypto, payload format, signing, key derivation) and `agent-seal-fingerprint` (fingerprint model) are versioned stability boundaries
+- **Core stays frozen**: `snapfzz-seal-core` (crypto, payload format, signing, key derivation) and `snapfzz-seal-fingerprint` (fingerprint model) are versioned stability boundaries
 - **Feature gates, not runtime dispatch**: Platform-specific code uses `#[cfg(target_os)]`, not runtime OS detection. Each launcher binary is compiled per-target triple.
 - **All backends produce the same artifact**: A native executable that gets encrypted. The backend abstraction is "compile this project into a native binary," not "manage the encryption pipeline."
 - **Preserve the assembled binary format**: `launcher_bytes ++ SENTINEL ++ encrypted_payload ++ footer ++ signature_block` — this is the wire format
@@ -31,7 +31,7 @@ These are load-bearing walls:
 
 | Boundary | Reason |
 |----------|--------|
-| `agent-seal-core` crate | Protocol specification — payload format, AES-256-GCM, HKDF, Ed25519, error types |
+| `snapfzz-seal-core` crate | Protocol specification — payload format, AES-256-GCM, HKDF, Ed25519, error types |
 | `FingerprintSnapshot` + `RuntimeKind` + canonicalization | Identity system — additive-only for new variants |
 | Assembled binary format (`launcher_bytes ++ SENTINEL ++ payload ++ footer ++ sig`) | Wire format |
 | `ExecutionOps` trait surface (`create_fd → write → seal → exec`) | Cross-platform contract |
@@ -52,7 +52,7 @@ These are load-bearing walls:
 ### Target State
 
 ```rust
-// crates/agent-seal-server/src/sandbox/mod.rs
+// crates/snapfzz-seal-server/src/sandbox/mod.rs
 pub mod docker;
 pub mod firecracker;  // Phase 3
 
@@ -116,7 +116,7 @@ Already implemented in this session:
 ### Target State
 
 ```rust
-// crates/agent-seal-compiler/src/backend/mod.rs
+// crates/snapfzz-seal-compiler/src/backend/mod.rs
 pub mod nuitka;
 pub mod pyinstaller;
 // Future: nodejs, golang, rust_static, passthrough
@@ -198,7 +198,7 @@ let result = backend.compile(config)?;
 The launcher crate splits into platform-agnostic core and platform-specific modules:
 
 ```
-crates/agent-seal-launcher/
+crates/snapfzz-seal-launcher/
   src/
     lib.rs                # platform-agnostic orchestration
                             # (crypto, payload, signature, key derivation)
@@ -401,15 +401,15 @@ cd $PROJECT_DIR && \
 
 ```
 crates/
-  agent-seal-core/          # UNCHANGED
-  agent-seal-fingerprint/   # UNCHANGED (additive RuntimeKind only)
-  agent-seal-compiler/
+  snapfzz-seal-core/          # UNCHANGED
+  snapfzz-seal-fingerprint/   # UNCHANGED (additive RuntimeKind only)
+  snapfzz-seal-compiler/
     src/
       backend/              # NEW: CompileBackend trait + registry
         mod.rs
         nuitka.rs           # MOVED from compile.rs
         pyinstaller.rs       # MOVED from compile.rs
-  agent-seal-launcher/
+  snapfzz-seal-launcher/
     src/
       exec/                  # NEW: ExecutionOps trait
         mod.rs
@@ -428,13 +428,13 @@ crates/
         windows.rs
       anti_debug.rs         # MOVED to protection/linux.rs
       self_delete.rs        # MOVED to cleanup/linux.rs
-  agent-seal-server/
+  snapfzz-seal-server/
     src/
       sandbox/
         mod.rs              # NEW: SandboxBackend trait
         docker.rs           # MOVED from sandbox.rs
         firecracker.rs      # NEW
-  agent-seal/               # UNCHANGED (umbrella CLI)
+  snapfzz-seal/               # UNCHANGED (umbrella CLI)
 ```
 
 ---

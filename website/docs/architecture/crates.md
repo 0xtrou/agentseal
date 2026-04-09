@@ -2,9 +2,9 @@
 
 | Crate | Role |
 |-------|------|
-| `agent-seal` | CLI binary |
-| `agent-seal-core` | Crypto, types, payload |
-| `agent-seal-fingerprint` | Fingerprint collection |
-| `agent-seal-launcher` | Runtime launcher |
-| `agent-seal-compiler` | Build pipeline |
-| `agent-seal-server` | Orchestration API |
+| `snapfzz-seal` | CLI binary |
+| `snapfzz-seal-core` | Crypto, types, payload |
+| `snapfzz-seal-fingerprint` | Fingerprint collection |
+| `snapfzz-seal-launcher` | Runtime launcher |
+| `snapfzz-seal-compiler` | Build pipeline |
+| `snapfzz-seal-server` | Orchestration API |

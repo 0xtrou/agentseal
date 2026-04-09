@@ -15,4 +15,4 @@
 - Server API exposure (unauthenticated)
 - Static binary analysis (known marker)
 
-Agent Seal raises attacker cost. Not a replacement for host trust.
+Snapfzz Seal raises attacker cost. Not a replacement for host trust.

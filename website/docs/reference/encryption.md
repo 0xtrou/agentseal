@@ -9,8 +9,8 @@
 ## HKDF Derivation
 
 ```
-K_env = HKDF(master_secret, stable || user_fp, "agent-seal/env/v1")
-K_session = HKDF(K_env, ephemeral_fp, "agent-seal/session/v1")
+K_env = HKDF(master_secret, stable || user_fp, "snapfzz-seal/env/v1")
+K_session = HKDF(K_env, ephemeral_fp, "snapfzz-seal/session/v1")
 ```
 
 ## Master Secret

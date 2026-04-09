@@ -16,18 +16,18 @@ seal compile \
   --user-fingerprint $USER_FP \
   --sandbox-fingerprint auto \
   --output ./agent.sealed \
-  --launcher ./target/release/agent-seal-launcher
+  --launcher ./target/release/snapfzz-seal-launcher
 ```
 
 ## 3. Sign
 
 ```bash
-seal sign --key ~/.agent-seal/keys/key --binary ./agent.sealed
+seal sign --key ~/.snapfzz-seal/keys/key --binary ./agent.sealed
 ```
 
 ## 4. Launch
 
 ```bash
-AGENT_SEAL_MASTER_SECRET_HEX=... \
+SNAPFZZ_SEAL_MASTER_SECRET_HEX=... \
   seal launch --payload ./agent.sealed --user-fingerprint $USER_FP
 ```

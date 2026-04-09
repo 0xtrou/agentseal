@@ -9,10 +9,10 @@
 ## Build from Source
 
 ```bash
-git clone https://github.com/0xtrou/agentseal.git
-cd agentseal
+git clone https://github.com/0xtrou/snapfzz-seal.git
+cd snapfzz-seal
 cargo build --release
-cargo install --path crates/agent-seal
+cargo install --path crates/snapfzz-seal
 ```
 
 ## Verify

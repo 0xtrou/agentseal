@@ -7,13 +7,13 @@ seal keygen
 ```
 
 Creates:
-- `~/.agent-seal/keys/key` — Secret key (keep secret!)
-- `~/.agent-seal/keys/key.pub` — Public key (distribute)
+- `~/.snapfzz-seal/keys/key` — Secret key (keep secret!)
+- `~/.snapfzz-seal/keys/key.pub` — Public key (distribute)
 
 ## Signing
 
 ```bash
-seal sign --key ~/.agent-seal/keys/key --binary ./agent.sealed
+seal sign --key ~/.snapfzz-seal/keys/key --binary ./agent.sealed
 ```
 
 ## Verification

@@ -3,7 +3,7 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Agent Seal',
+  title: 'Snapfzz Seal',
   tagline: 'Encrypted, sandbox-bound agent delivery system',
   favicon: 'img/favicon.ico',
 
@@ -11,11 +11,11 @@ const config: Config = {
     v4: true,
   },
 
-  url: 'https://agentseal.snapfzz.com',
+  url: 'https://snapfzz-seal.snapfzz.com',
   baseUrl: '/',
 
   organizationName: '0xtrou',
-  projectName: 'agentseal',
+  projectName: 'snapfzz-seal',
 
   onBrokenLinks: 'throw',
 
@@ -30,7 +30,7 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/0xtrou/agentseal/tree/main/website/',
+          editUrl: 'https://github.com/0xtrou/snapfzz-seal/tree/main/website/',
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -51,9 +51,9 @@ const config: Config = {
       },
     },
     navbar: {
-      title: 'Agent Seal',
+      title: 'Snapfzz Seal',
       logo: {
-        alt: 'Agent Seal Logo',
+        alt: 'Snapfzz Seal Logo',
         src: 'img/logo.svg',
       },
       items: [
@@ -64,7 +64,7 @@ const config: Config = {
           label: 'Documentation',
         },
         {
-          href: 'https://github.com/0xtrou/agentseal',
+          href: 'https://github.com/0xtrou/snapfzz-seal',
           label: 'GitHub',
           position: 'right',
         },
@@ -108,16 +108,16 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/0xtrou/agentseal',
+              href: 'https://github.com/0xtrou/snapfzz-seal',
             },
             {
               label: 'Issues',
-              href: 'https://github.com/0xtrou/agentseal/issues',
+              href: 'https://github.com/0xtrou/snapfzz-seal/issues',
             },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Agent Seal Contributors`,
+      copyright: `Copyright © ${new Date().getFullYear()} Snapfzz Seal Contributors`,
     },
     prism: {
       theme: prismThemes.github,

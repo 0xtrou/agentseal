@@ -1,4 +1,4 @@
-# Agent Seal
+# Snapfzz Seal
 
 ![Build](docs/badges/build-status.svg)
 ![Coverage](docs/badges/coverage.svg)
@@ -6,11 +6,11 @@
 
 **Encrypted, sandbox-bound agent delivery system for Linux.**
 
-[📚 Full Documentation](https://0xtrou.github.io/agentseal/) | [GitHub](https://github.com/0xtrou/agentseal)
+[📚 Full Documentation](https://0xtrou.github.io/snapfzz-seal/) | [GitHub](https://github.com/0xtrou/snapfzz-seal)
 
 ## What It Does
 
-Agent Seal compiles AI agents into sealed binaries that:
+Snapfzz Seal compiles AI agents into sealed binaries that:
 - Bind decryption to runtime environment fingerprints
 - Execute entirely from memory (memfd + fexecve)
 - Verify builder signatures before launch
@@ -21,7 +21,7 @@ Agent Seal compiles AI agents into sealed binaries that:
 ### 1. Install
 
 ```bash
-cargo install --path crates/agent-seal
+cargo install --path crates/snapfzz-seal
 ```
 
 ### 2. Generate Keys
@@ -40,19 +40,19 @@ seal compile \
   --user-fingerprint $USER_FP \
   --sandbox-fingerprint auto \
   --output ./agent.sealed \
-  --launcher ./target/release/agent-seal-launcher
+  --launcher ./target/release/snapfzz-seal-launcher
 ```
 
 ### 4. Sign
 
 ```bash
-seal sign --key ~/.agent-seal/keys/key --binary ./agent.sealed
+seal sign --key ~/.snapfzz-seal/keys/key --binary ./agent.sealed
 ```
 
 ### 5. Launch
 
 ```bash
-AGENT_SEAL_MASTER_SECRET_HEX=... \
+SNAPFZZ_SEAL_MASTER_SECRET_HEX=... \
   seal launch --payload ./agent.sealed --user-fingerprint $USER_FP
 ```
 
@@ -77,12 +77,12 @@ AGENT_SEAL_MASTER_SECRET_HEX=... \
 
 ## Security
 
-Agent Seal raises attacker cost but is **not** a replacement for:
+Snapfzz Seal raises attacker cost but is **not** a replacement for:
 - Host-level trust
 - Hardware attestation
 - Secure key distribution
 
-See [Threat Model](https://0xtrou.github.io/agentseal/security/threat-model.html) for details.
+See [Threat Model](https://0xtrou.github.io/snapfzz-seal/security/threat-model.html) for details.
 
 ## License
 
