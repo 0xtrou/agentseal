@@ -28,7 +28,7 @@ const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     8,   // lseek
     217, // getdents64
     332, // statx
-    262, // fchownat
+    262, // fchownat (required: runtime file ownership metadata queries)
     89,  // readlink
     21,  // access
     439, // faccessat2

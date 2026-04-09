@@ -228,6 +228,8 @@ seal server --bind 127.0.0.1:9090 --compile-dir ./.agent-seal/compile --output-d
 
 ### Run orchestration server
 
+> **Note:** Signing is now mandatory — `seal sign` must be run before `seal launch`. Unsigned payloads assembled before this change will fail with `MissingSignature`.
+
 ```bash
 # 1. Generate a signing keypair (one-time per builder)
 seal keygen
