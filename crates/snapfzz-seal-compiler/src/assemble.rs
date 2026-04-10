@@ -208,22 +208,19 @@ mod tests {
 
         let assembled = assemble(&config).expect("assembly should succeed");
 
+        // Find the payload sentinel to extract the launcher portion
+        let sentinel_pos = assembled
+            .windows(LAUNCHER_PAYLOAD_SENTINEL.len())
+            .position(|w| w == LAUNCHER_PAYLOAD_SENTINEL)
+            .expect("sentinel should be found");
+
         let env_key = derive_env_key(&master_secret, &stable_fingerprint_hash, &user_fingerprint)
             .expect("key derivation should succeed");
-        let launcher_with_secret =
-            embed_master_secret(&launcher_bytes, &master_secret).expect("secret embed");
-        let launcher_with_decoys =
-            embed_decoy_secrets(&launcher_with_secret, 0).expect("decoys embed");
-        let mut tamper_hash = [0_u8; 32];
-        tamper_hash.copy_from_slice(&Sha256::digest(&launcher_with_decoys));
-        let launcher_with_tamper =
-            embed_tamper_hash(&launcher_with_decoys, &tamper_hash).expect("tamper embed");
-        let whitebox_tables = generate_whitebox_tables(&master_secret);
-        let launcher_with_whitebox =
-            embed_whitebox_tables(&launcher_with_tamper, &whitebox_tables).expect("whitebox embed");
-        let integrity_key =
-            derive_key_with_integrity_from_binary(&env_key, &launcher_with_whitebox)
-                .expect("integrity key");
+
+        // Derive integrity key from the actual launcher portion in the assembled binary
+        let launcher_portion = &assembled[..sentinel_pos];
+        let integrity_key = derive_key_with_integrity_from_binary(&env_key, launcher_portion)
+            .expect("integrity key");
         let payload_len = pack_payload_with_mode(
             Cursor::new(agent_bytes.clone()),
             &integrity_key,
