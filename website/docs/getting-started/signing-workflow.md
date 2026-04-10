@@ -98,11 +98,16 @@ A staged rotation procedure is recommended.
 
 ## Security considerations
 
-- Signing should be performed in controlled CI runners with restricted outbound access.
-- Signature verification should be mandatory in pre-deploy and pre-launch checks.
-- Build provenance logs should include key identifiers and artifact digests.
+- Signing **SHOULD** be performed in controlled CI runners with restricted outbound access.
+- Signature verification **MUST** be mandatory in pre-deploy and pre-launch checks.
+- Build provenance logs **SHOULD** include key identifiers and artifact digests.
 
 ## Limitations
 
 - The current CLI appends one signature block per run and does not expose multi-signer metadata.
 - Verifier output is human-readable text and should be wrapped by policy automation for strict CI enforcement.
+
+## References
+
+- **Ed25519**: Bernstein, D. et al. (2012). "High-speed high-security signatures". Journal of Cryptographic Engineering 4(2). [doi:10.1007/s13389-012-0007-1](https://doi.org/10.1007/s13389-012-0007-1)
+- **Key Management**: Barker, E. et al. (2020). NIST SP 800-57 Part 1 Rev. 5. Recommendation for Key Management.

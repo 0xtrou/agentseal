@@ -113,14 +113,14 @@ Snapfzz Seal implements 6 security layers to protect master secrets:
 | 5 | `integrity.rs` | Binary hash binding |
 | 6 | `whitebox/` | Lookup table cryptography |
 
-**Combined Effect:** Weeks-months of expert cryptanalysis required.
+**Combined Effect:** Expert-level cryptanalysis required.
 
 ### Key Security Components
 
 #### snapfzz-seal-core
-- `shamir`: Shamir Secret Sharing implementation (GF(2^256))
+- `shamir`: Shamir Secret Sharing implementation (prime field with secp256k1 modulus)
 - `integrity`: ELF binary parsing and integrity verification
-- `whitebox`: White-box AES-256 with T-boxes and mixing tables
+- `whitebox`: White-box AES-256 with T-boxes and mixing tables (~165KB)
 - `build.rs`: Compile-time random marker generation
 
 #### snapfzz-seal-compiler
@@ -141,7 +141,7 @@ Snapfzz Seal implements 6 security layers to protect master secrets:
 
 **After (v0.2+):**
 - Master secret protected by 6 layers
-- Key spread across ~500KB-2MB of lookup tables
+- Key spread across ~165KB of lookup tables
 - Requires expert-level reverse engineering
 
 The above flow traverses `snapfzz-seal` -> compiler/core -> launcher/core/fingerprint crates.
@@ -157,3 +157,13 @@ The above flow traverses `snapfzz-seal` -> compiler/core -> launcher/core/finger
 - API stability policy across crate internals is not formally versioned yet.
 - Backend behavior depends on host toolchain availability and may vary by environment.
 - Cross-crate interfaces are documented by source and tests, not yet by generated API reference docs.
+
+## References
+
+### Cryptographic Foundations
+
+- **AES-GCM**: Dworkin, M. (2007). NIST SP 800-38D.
+- **Shamir Secret Sharing**: Shamir, A. (1979). "How to Share a Secret". CACM 22(11):612-613.
+- **White-Box AES**: Chow, S. et al. (2002). SAC 2002, LNCS 2595.
+- **Ed25519**: Bernstein, D. et al. (2012). Journal of Cryptographic Engineering 4(2).
+- **HKDF**: Krawczyk, H. (2010). RFC 5869.

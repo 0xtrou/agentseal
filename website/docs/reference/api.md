@@ -322,8 +322,13 @@ All errors return JSON:
 
 ## Security Considerations
 
-1. **No authentication** — Must be deployed behind auth gateway
+1. **No authentication** — Server **MUST** be deployed behind an authenticated gateway
 2. **Project path validation** — Only projects inside `compile_dir` allowed
 3. **Docker execution** — Runs with hardened flags but has network access
-4. **No TLS** — Use reverse proxy for HTTPS
-5. **No input sanitization** — Be careful with user-provided values
+4. **No TLS** — **MUST** use reverse proxy for HTTPS
+5. **No input sanitization** — **MUST** validate user-provided values at gateway layer
+
+## References
+
+- **REST API Design**: Fielding, R. (2000). "Architectural Styles and the Design of Network-based Software Architectures". Doctoral dissertation, University of California, Irvine.
+- **HTTP Semantics**: RFC 9110 (2022). HTTP Semantics.

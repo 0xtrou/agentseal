@@ -91,9 +91,9 @@ assert_ne!(env, session);
 
 ## Security considerations
 
-- Master secrets must be generated from cryptographically secure randomness.
-- Distinct master secrets should be used for independent trust domains.
-- Key material should be zeroized after use where possible.
+- Master secrets **MUST** be generated from cryptographically secure randomness.
+- Distinct master secrets **SHOULD** be used for independent trust domains.
+- Key material **SHOULD** be zeroized after use where possible.
 
 ## Limitations
 
@@ -103,5 +103,5 @@ assert_ne!(env, session);
 
 ## Standards references
 
-- NIST SP 800-38D, Recommendation for Block Cipher Modes of Operation: GCM
-- RFC 5869, HMAC-based Extract-and-Expand Key Derivation Function (HKDF)
+- **AES-GCM**: Dworkin, M. (2007). "Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC". NIST SP 800-38D. [doi:10.6028/NIST.SP.800-38D](https://doi.org/10.6028/NIST.SP.800-38D)
+- **HKDF**: Krawczyk, H. (2010). "Cryptographic Extraction and Key Derivation: The HKDF Scheme". RFC 5869. [doi:10.17487/RFC5869](https://doi.org/10.17487/RFC5869)

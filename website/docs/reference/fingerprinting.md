@@ -69,12 +69,17 @@ println!("ephemeral sources: {}", snapshot.ephemeral.len());
 
 ## Security considerations
 
-- Source values may include host-identifying material. Access should be controlled.
+- Source values may include host-identifying material. Access **MUST** be controlled.
 - HMAC wrapping is used for selected identifiers when app key context is available.
-- Fingerprint mismatch events should be monitored as either drift or adversarial replay indicators.
+- Fingerprint mismatch events **SHOULD** be monitored as either drift or adversarial replay indicators.
 
 ## Limitations
 
 - Fingerprints are software-observed and do not constitute hardware attestation.
 - Environments with aggressive mutation of host metadata can reduce stable binding reliability.
 - `sandbox-fingerprint auto` in compile flow does not provide measured remote fingerprint identity.
+
+## References
+
+- **HMAC**: Krawczyk, H., Bellare, M., & Canetti, R. (1997). RFC 2104. HMAC: Keyed-Hashing for Message Authentication.
+- **SHA-256**: NIST FIPS 180-4. Secure Hash Standard.

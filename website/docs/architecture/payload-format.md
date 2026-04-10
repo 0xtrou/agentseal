@@ -94,3 +94,9 @@ PY
 
 - Format versioning is single-track at present and does not include backward compatibility negotiation.
 - The signature block model assumes one active signature record at artifact tail.
+
+## References
+
+- **Ed25519**: Bernstein, D. et al. (2012). "High-speed high-security signatures". Journal of Cryptographic Engineering 4(2).
+- **AES-GCM**: Dworkin, M. (2007). NIST SP 800-38D.
+- **SHA-256**: NIST FIPS 180-4. Secure Hash Standard.

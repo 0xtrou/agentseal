@@ -232,13 +232,18 @@ But the compiled artifact should have the secret embedded already.
 
 ## Security considerations
 
-- **Use pinned public key verification** in all production paths.
-- **Treat compile logs as potentially sensitive** operational data.
-- **Store build artifacts** in access-controlled locations.
-- **Remember**: Signatures verify integrity, not identity. Implement external key pinning for production.
+- **Use pinned public key verification** — Production paths **MUST** use `--pubkey` flag.
+- **Treat compile logs as potentially sensitive** — Logs **SHOULD** be protected as operational data.
+- **Store build artifacts** — Artifacts **SHOULD** be stored in access-controlled locations.
+- **Remember**: Signatures verify integrity, not identity. **MUST** implement external key pinning for production.
 
 ## Limitations
 
 - `auto` sandbox fingerprint mode is intended for convenience, not high-assurance remote identity.
 - Runtime protection depends on host integrity and cannot resist full host compromise.
 - No cross-platform execution — Linux only for sealed agent execution.
+
+## References
+
+- **Ed25519**: Bernstein, D. et al. (2012). "High-speed high-security signatures". Journal of Cryptographic Engineering 4(2).
+- **AES-GCM**: Dworkin, M. (2007). NIST SP 800-38D.

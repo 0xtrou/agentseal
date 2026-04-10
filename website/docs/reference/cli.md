@@ -253,10 +253,10 @@ seal compile \
 
 ## Security considerations
 
-- **Use pinned key verification** in production automation, not TOFU mode.
-- **Avoid passing secrets via shell history** in shared terminals environments.
-- **Restrict server network exposure** to authenticated local interfaces or protected tunnels.
-- **Treat compile logs as potentially sensitive** — they may contain operational details.
+- **Use pinned key verification** — Production automation **MUST** use `--pubkey` flag, not TOFU mode.
+- **Avoid passing secrets via shell history** — **SHOULD NOT** pass secrets in shared terminal environments.
+- **Restrict server network exposure** — Server **MUST** be deployed to authenticated local interfaces or protected tunnels.
+- **Treat compile logs as potentially sensitive** — Logs **SHOULD** be protected as they may contain operational details.
 
 ## Limitations
 
@@ -264,3 +264,8 @@ seal compile \
 - Structured machine-readable command output is limited to selected commands.
 - `--backend-opts` for passing flags to backend tools is NOT implemented.
 - Backend auto-install is NOT implemented — tools must be pre-installed.
+
+## References
+
+- **Ed25519**: Bernstein, D. et al. (2012). "High-speed high-security signatures". Journal of Cryptographic Engineering 4(2).
+- **HKDF**: Krawczyk, H. (2010). RFC 5869.
