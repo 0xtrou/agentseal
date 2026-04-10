@@ -228,10 +228,12 @@ fn merge_regions(mut regions: Vec<(usize, usize)>, binary_len: usize) -> Vec<(us
     let mut merged: Vec<(usize, usize)> = Vec::with_capacity(regions.len());
     for (start, end) in regions {
         let end = end.min(binary_len);
-        if let Some((_, previous_end)) = merged.last_mut()
-            && start <= *previous_end
-        {
-            *previous_end = (*previous_end).max(end);
+        if let Some((_, previous_end)) = merged.last_mut() {
+            if start <= *previous_end {
+                *previous_end = (*previous_end).max(end);
+            } else {
+                merged.push((start, end));
+            }
         } else {
             merged.push((start, end));
         }

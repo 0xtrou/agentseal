@@ -545,12 +545,12 @@ fn fork_error_to_seal(err: Errno) -> SealError {
 }
 
 fn run_memfd_child<Ops: MemfdOps>(ops: &Ops, binary_data: &[u8], config: &ExecConfig) -> ! {
-    if let Some(cwd) = &config.cwd
-        && let Err(err) = std::env::set_current_dir(cwd)
-    {
-        eprintln!("failed to set cwd: {err}");
-        unsafe {
-            nix::libc::_exit(127);
+    if let Some(cwd) = &config.cwd {
+        if let Err(err) = std::env::set_current_dir(cwd) {
+            eprintln!("failed to set cwd: {err}");
+            unsafe {
+                nix::libc::_exit(127);
+            }
         }
     }
 

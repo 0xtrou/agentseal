@@ -1,7 +1,10 @@
 use snapfzz_seal_core::{
     error::SealError,
     shamir::split_secret,
-    types::{LAUNCHER_TAMPER_MARKER, SHAMIR_THRESHOLD, SHAMIR_TOTAL_SHARES, get_secret_marker},
+    types::{
+        LAUNCHER_PAYLOAD_SENTINEL, LAUNCHER_TAMPER_MARKER, SHAMIR_THRESHOLD, SHAMIR_TOTAL_SHARES,
+        get_secret_marker,
+    },
 };
 
 pub fn embed_master_secret(launcher_bytes: &[u8], secret: &[u8; 32]) -> Result<Vec<u8>, SealError> {
@@ -19,7 +22,7 @@ pub fn embed_master_secret_with_shamir(
 
     for (i, (_x, share)) in shares.iter().enumerate() {
         let marker = get_secret_marker(i);
-        let marker_offset = find_marker(&modified, marker)
+        let marker_offset = find_marker_with_slot(&modified, marker, share.len())
             .ok_or_else(|| embed_failed(&format!("marker {} not found", i + 1)))?;
 
         let share_offset = marker_offset + marker.len();
@@ -43,10 +46,11 @@ pub fn embed_tamper_hash(launcher_bytes: &[u8], hash: &[u8; 32]) -> Result<Vec<u
 
 fn replace_after_marker(
     launcher_bytes: &[u8],
-    marker: &[u8],
+    marker: &[u8; 32],
     replacement: &[u8; 32],
 ) -> Result<Vec<u8>, SealError> {
-    let Some(marker_offset) = find_marker(launcher_bytes, marker) else {
+    let Some(marker_offset) = find_marker_with_slot(launcher_bytes, marker, replacement.len())
+    else {
         return Err(embed_failed("marker not found"));
     };
 
@@ -67,6 +71,56 @@ fn find_marker(haystack: &[u8], marker: &[u8]) -> Option<usize> {
         .position(|window| window == marker)
 }
 
+fn marker_is_followed_by_slot(
+    launcher_bytes: &[u8],
+    marker_offset: usize,
+    slot_len: usize,
+) -> bool {
+    let slot_start = marker_offset + 32;
+    let slot_end = slot_start + slot_len;
+
+    if launcher_bytes.len() < slot_end {
+        return false;
+    }
+
+    if launcher_bytes[slot_start..slot_end]
+        .windows(32)
+        .any(|window| window == LAUNCHER_PAYLOAD_SENTINEL || window == LAUNCHER_TAMPER_MARKER)
+    {
+        return false;
+    }
+
+    for index in 0..SHAMIR_TOTAL_SHARES {
+        if launcher_bytes[slot_start..slot_end]
+            .windows(32)
+            .any(|window| window == get_secret_marker(index))
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn find_marker_with_slot(
+    launcher_bytes: &[u8],
+    marker: &[u8; 32],
+    slot_len: usize,
+) -> Option<usize> {
+    let mut search_from = 0usize;
+
+    while search_from + marker.len() <= launcher_bytes.len() {
+        let relative_offset = find_marker(&launcher_bytes[search_from..], marker)?;
+        let marker_offset = search_from + relative_offset;
+        if marker_is_followed_by_slot(launcher_bytes, marker_offset, slot_len) {
+            return Some(marker_offset);
+        }
+        search_from = marker_offset + marker.len();
+    }
+
+    None
+}
+
 fn embed_failed(detail: &str) -> SealError {
     SealError::CompilationError(format!("EmbedFailed: {detail}"))
 }
@@ -76,7 +130,10 @@ mod tests {
     use super::*;
     use snapfzz_seal_core::{
         shamir::reconstruct_secret,
-        types::{LAUNCHER_TAMPER_MARKER, SHAMIR_THRESHOLD, SHAMIR_TOTAL_SHARES, get_secret_marker},
+        types::{
+            LAUNCHER_PAYLOAD_SENTINEL, LAUNCHER_TAMPER_MARKER, SHAMIR_THRESHOLD,
+            SHAMIR_TOTAL_SHARES, get_secret_marker,
+        },
     };
 
     fn launcher_with_share_slots(slot_len: usize) -> Vec<u8> {
@@ -129,6 +186,40 @@ mod tests {
         let tamper_start =
             find_marker(&modified, LAUNCHER_TAMPER_MARKER).unwrap() + LAUNCHER_TAMPER_MARKER.len();
         assert_eq!(&modified[tamper_start..tamper_start + 32], &hash);
+    }
+
+    #[test]
+    fn embed_skips_false_positive_marker_without_slot() {
+        let marker0 = get_secret_marker(0);
+        let marker1 = get_secret_marker(1);
+
+        let mut launcher = vec![0xAA; 16];
+        launcher.extend_from_slice(marker0);
+        launcher.extend_from_slice(marker1);
+        launcher.extend_from_slice(&[0xBB; 16]);
+        launcher.extend_from_slice(marker0);
+        launcher.extend_from_slice(&[0u8; 32]);
+
+        let marker_offset = find_marker_with_slot(&launcher, marker0, 32)
+            .expect("real marker slot should be found");
+
+        assert_eq!(marker_offset, 16 + 32 + 32 + 16);
+    }
+
+    #[test]
+    fn marker_slot_rejects_payload_or_tamper_markers_inside_slot() {
+        let marker0 = get_secret_marker(0);
+
+        let mut launcher = vec![0xCC; 24];
+        launcher.extend_from_slice(marker0);
+        launcher.extend_from_slice(LAUNCHER_PAYLOAD_SENTINEL);
+
+        assert!(find_marker_with_slot(&launcher, marker0, 32).is_none());
+
+        launcher.truncate(24 + 32);
+        launcher.extend_from_slice(LAUNCHER_TAMPER_MARKER);
+
+        assert!(find_marker_with_slot(&launcher, marker0, 32).is_none());
     }
 
     #[test]

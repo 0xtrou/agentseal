@@ -148,10 +148,10 @@ impl FieldElement {
         loop {
             let mut bytes = [0u8; 32];
             rng.fill_bytes(&mut bytes);
-            if let Ok(candidate) = Self::from_bytes(bytes)
-                && candidate != Self::zero()
-            {
-                return candidate;
+            if let Ok(candidate) = Self::from_bytes(bytes) {
+                if candidate != Self::zero() {
+                    return candidate;
+                }
             }
         }
     }

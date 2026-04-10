@@ -1,0 +1,14 @@
+services:
+  e2e-test:
+    build:
+      context: ..
+      dockerfile: e2e-tests/Dockerfile
+      args:
+        BUILD_ID: ${BUILD_ID:-e2e-test-default}
+    environment:
+      - BUILD_ID=${BUILD_ID:-e2e-test-default}
+      - SNAPFZZ_SEAL_API_KEY=${SNAPFZZ_SEAL_API_KEY:-}
+      - SNAPFZZ_SEAL_API_BASE=${SNAPFZZ_SEAL_API_BASE:-}
+      - SNAPFZZ_SEAL_MODEL=${SNAPFZZ_SEAL_MODEL:-}
+    volumes:
+      - ../examples:/app/examples:ro

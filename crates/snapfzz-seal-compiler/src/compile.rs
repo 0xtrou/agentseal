@@ -41,11 +41,22 @@ fn run_strip(binary_path: &Path) -> Result<(), SealError> {
                 Ok(())
             } else {
                 let stderr = String::from_utf8_lossy(&result.stderr);
-                Err(SealError::CompilationError(format!(
-                    "strip failed for {}: {}",
-                    binary_path.display(),
-                    stderr.trim()
-                )))
+                let stderr_trimmed = stderr.trim();
+                if stderr_trimmed.contains("Unable to recognise the format")
+                    || stderr_trimmed.contains("file format not recognized")
+                {
+                    tracing::warn!(
+                        "strip skipped for {}: format not recognized (may already be stripped)",
+                        binary_path.display()
+                    );
+                    Ok(())
+                } else {
+                    Err(SealError::CompilationError(format!(
+                        "strip failed for {}: {}",
+                        binary_path.display(),
+                        stderr_trimmed
+                    )))
+                }
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),

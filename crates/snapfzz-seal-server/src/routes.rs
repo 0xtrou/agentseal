@@ -538,10 +538,10 @@ mod tests {
 
     async fn wait_for_status(state: &ServerState, job_id: &str, expected: JobState) {
         for _ in 0..240 {
-            if let Some(job) = state.get_job(job_id).await
-                && job.status == expected
-            {
-                return;
+            if let Some(job) = state.get_job(job_id).await {
+                if job.status == expected {
+                    return;
+                }
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }

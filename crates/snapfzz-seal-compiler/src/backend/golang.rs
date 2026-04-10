@@ -59,10 +59,20 @@ pub fn compile_with_go(config: &GoConfig) -> Result<PathBuf, SealError> {
         .arg(&output_path)
         .arg(".");
 
+    let goarch = std::env::var("GOARCH").unwrap_or_else(|_| {
+        if cfg!(target_arch = "aarch64") {
+            "arm64".to_string()
+        } else if cfg!(target_arch = "x86_64") {
+            "amd64".to_string()
+        } else {
+            "amd64".to_string()
+        }
+    });
+
     command
         .env("CGO_ENABLED", "0")
         .env("GOOS", "linux")
-        .env("GOARCH", "amd64")
+        .env("GOARCH", &goarch)
         .current_dir(&config.project_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

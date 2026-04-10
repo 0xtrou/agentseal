@@ -204,10 +204,10 @@ impl SandboxBackend for DockerBackend {
 }
 
 fn find_docker_binary() -> Option<String> {
-    if let Ok(explicit) = std::env::var("DOCKER_BIN")
-        && !explicit.trim().is_empty()
-    {
-        return Some(explicit);
+    if let Ok(explicit) = std::env::var("DOCKER_BIN") {
+        if !explicit.trim().is_empty() {
+            return Some(explicit);
+        }
     }
 
     let path = std::env::var_os("PATH")?;

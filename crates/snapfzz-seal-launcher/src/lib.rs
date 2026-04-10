@@ -6,6 +6,11 @@ mod anti_analysis;
 mod anti_debug;
 mod cleanup;
 mod markers;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn snapfzz_launcher_markers_ptr() -> *const markers::LauncherMarkers {
+    markers::preserve_launcher_markers()
+}
 mod memfd_exec;
 mod protection;
 #[allow(dead_code)]
@@ -91,6 +96,8 @@ fn verify_signature(payload_bytes: &[u8]) -> Result<(), SealError> {
 }
 
 pub fn run(cli: Cli) -> Result<(), SealError> {
+    let _ = snapfzz_launcher_markers_ptr();
+
     let payload_bytes = load_payload_bytes(cli.payload.as_deref())?;
     let launcher_bytes_for_integrity = resolve_binary_for_integrity(cli.payload.as_deref())?;
     validate_payload_header(&payload_bytes)?;
@@ -230,13 +237,15 @@ pub fn format_user_error(err: &SealError) -> String {
 }
 
 fn load_payload_bytes(payload_arg: Option<&str>) -> Result<Vec<u8>, SealError> {
-    match payload_arg {
-        Some(path) if !path.eq_ignore_ascii_case("self") => std::fs::read(path).map_err(Into::into),
+    let binary_bytes = match payload_arg {
+        Some(path) if !path.eq_ignore_ascii_case("self") => std::fs::read(path)?,
         _ => {
             let executable_bytes = std::fs::read("/proc/self/exe")?;
-            extract_payload_from_assembled_binary(&executable_bytes)
+            return extract_payload_from_assembled_binary(&executable_bytes);
         }
-    }
+    };
+
+    extract_payload_from_assembled_binary(&binary_bytes)
 }
 
 pub fn extract_footer(payload_bytes: &[u8]) -> Result<PayloadFooter, SealError> {
@@ -258,16 +267,25 @@ fn extract_payload_from_assembled_binary(executable_bytes: &[u8]) -> Result<Vec<
         return extract_payload_at_launcher_size(executable_bytes, launcher_size);
     }
 
-    let marker_offset = find_marker(executable_bytes, LAUNCHER_PAYLOAD_SENTINEL).ok_or_else(|| {
+    let first_marker_offset = find_marker(executable_bytes, LAUNCHER_PAYLOAD_SENTINEL);
+    let last_marker_offset = find_last_marker(executable_bytes, LAUNCHER_PAYLOAD_SENTINEL).ok_or_else(|| {
         SealError::InvalidInput(
             "unable to locate embedded payload in self executable; set SNAPFZZ_SEAL_LAUNCHER_SIZE or provide --payload"
                 .to_string(),
         )
     })?;
 
+    if let Some(first_offset) = first_marker_offset {
+        if first_offset == last_marker_offset {
+            tracing::warn!(
+                "payload sentinel appears only once - binary may have been tampered with or is raw launcher"
+            );
+        }
+    }
+
     payload_from_offset(
         executable_bytes,
-        marker_offset + LAUNCHER_PAYLOAD_SENTINEL.len(),
+        last_marker_offset + LAUNCHER_PAYLOAD_SENTINEL.len(),
     )
 }
 
@@ -306,6 +324,12 @@ fn find_marker(haystack: &[u8], marker: &[u8]) -> Option<usize> {
     haystack
         .windows(marker.len())
         .position(|window| window == marker)
+}
+
+fn find_last_marker(haystack: &[u8], marker: &[u8]) -> Option<usize> {
+    haystack
+        .windows(marker.len())
+        .rposition(|window| window == marker)
 }
 
 fn decode_user_fingerprint(user_fingerprint_hex: Option<String>) -> Result<[u8; 32], SealError> {
