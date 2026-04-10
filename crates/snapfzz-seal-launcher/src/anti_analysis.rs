@@ -59,13 +59,13 @@ impl Default for TimingProfile {
 pub fn detect_debugger() -> bool {
     #[cfg(target_os = "linux")]
     {
-        if detect_ptrace() {
-            tracing::warn!("debugger detection hit ptrace check");
+        if check_tracer_pid() {
+            tracing::warn!("debugger detection hit TracerPid check");
             return true;
         }
 
-        if check_tracer_pid() {
-            tracing::warn!("debugger detection hit TracerPid check");
+        if detect_ptrace() {
+            tracing::warn!("debugger detection hit ptrace check");
             return true;
         }
     }

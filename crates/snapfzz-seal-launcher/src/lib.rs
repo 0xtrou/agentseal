@@ -33,8 +33,8 @@ use snapfzz_seal_core::{
     shamir::reconstruct_secret,
     signing,
     types::{
-        LAUNCHER_PAYLOAD_SENTINEL, PayloadFooter, SHAMIR_THRESHOLD, SHAMIR_TOTAL_SHARES,
-        get_secret_marker,
+        LAUNCHER_PAYLOAD_SENTINEL, LAUNCHER_TAMPER_MARKER, PayloadFooter, SHAMIR_THRESHOLD,
+        SHAMIR_TOTAL_SHARES, get_secret_marker,
     },
 };
 use snapfzz_seal_fingerprint::{
@@ -66,22 +66,22 @@ pub struct Cli {
     pub verbose: bool,
 }
 
-fn verify_signature(payload_bytes: &[u8]) -> Result<(), SealError> {
-    if payload_bytes.len() < SIG_BLOCK_SIZE {
-        tracing::error!("payload too short for signature verification");
+fn verify_signature(raw_binary: &[u8]) -> Result<(), SealError> {
+    if raw_binary.len() < SIG_BLOCK_SIZE {
+        tracing::error!("binary too short for signature verification");
         return Err(SealError::MissingSignature);
     }
-    let sig_start = payload_bytes.len() - SIG_BLOCK_SIZE;
-    if &payload_bytes[sig_start..sig_start + 4] != SIG_MAGIC {
+    let sig_start = raw_binary.len() - SIG_BLOCK_SIZE;
+    if &raw_binary[sig_start..sig_start + 4] != SIG_MAGIC {
         tracing::error!("no signature block found; unsigned payload rejected");
         return Err(SealError::MissingSignature);
     }
 
     let mut signature = [0u8; 64];
-    signature.copy_from_slice(&payload_bytes[sig_start + 4..sig_start + 68]);
+    signature.copy_from_slice(&raw_binary[sig_start + 4..sig_start + 68]);
     let mut pubkey = [0u8; 32];
-    pubkey.copy_from_slice(&payload_bytes[sig_start + 68..sig_start + 100]);
-    let data = &payload_bytes[..sig_start];
+    pubkey.copy_from_slice(&raw_binary[sig_start + 68..sig_start + 100]);
+    let data = &raw_binary[..sig_start];
 
     match signing::verify(&pubkey, data, &signature)? {
         true => {
@@ -98,18 +98,24 @@ fn verify_signature(payload_bytes: &[u8]) -> Result<(), SealError> {
 pub fn run(cli: Cli) -> Result<(), SealError> {
     let _ = snapfzz_launcher_markers_ptr();
 
-    let payload_bytes = load_payload_bytes(cli.payload.as_deref())?;
-    let launcher_bytes_for_integrity = resolve_binary_for_integrity(cli.payload.as_deref())?;
+    let raw_binary = load_raw_binary(cli.payload.as_deref())?;
+
+    // Strip signature block BEFORE extracting payload/footer so offsets are correct.
+    // Binary layout: [launcher | sentinel | encrypted_payload | footer(64) | sig_block(100)]
+    // After stripping: [launcher | sentinel | encrypted_payload | footer(64)]
+    let raw_no_sig = strip_signature_block(&raw_binary);
+    let payload_bytes = extract_payload_from_assembled_binary(raw_no_sig)?;
+
+    let raw_for_integrity = raw_no_sig;
+    let launcher_bytes_for_integrity = raw_for_integrity;
+
     validate_payload_header(&payload_bytes)?;
-    verify_signature(&payload_bytes)?;
+    verify_signature(&raw_binary)?;
     let footer = extract_footer(&payload_bytes).map_err(|_| {
         SealError::InvalidPayload("missing or corrupted payload footer".to_string())
     })?;
 
-    verify_launcher_integrity(&footer.launcher_hash, cli.payload.as_deref())?;
-
-    let protections = protection::apply_protections()?;
-    tracing::info!(?protections, "anti-debug protections evaluated");
+    verify_launcher_integrity(&footer.launcher_hash, raw_for_integrity)?;
 
     if anti_analysis::is_being_analyzed() {
         tracing::error!("analysis detected, aborting launcher execution");
@@ -117,6 +123,10 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
             "analysis environment detected, refusing to continue".to_string(),
         ));
     }
+
+    let protections = protection::apply_protections()?;
+    tracing::info!(?protections, "anti-debug protections evaluated");
+
     anti_analysis::poison_environment();
 
     let collector = FingerprintCollector::new();
@@ -129,21 +139,32 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
             .map_err(|err| SealError::InvalidInput(err.to_string()))?,
     };
 
+    let stable_hash = canonicalize_stable(&snapshot);
+
     let user_fingerprint = decode_user_fingerprint(cli.user_fingerprint)?;
-    let mut master_secret = load_master_secret(&payload_bytes)?;
+    let mut master_secret = load_master_secret(raw_for_integrity)?;
 
     let mut decryption_key = derive_decryption_key(
         &master_secret,
         &user_fingerprint,
         &snapshot,
         cli.fingerprint_mode,
-        &launcher_bytes_for_integrity,
+        launcher_bytes_for_integrity,
     )?;
 
+    // Strip footer from payload before decryption (footer is NOT encrypted)
+    const FOOTER_SIZE: usize = 64;
+    if payload_bytes.len() < FOOTER_SIZE {
+        return Err(SealError::InvalidPayload(
+            "payload too small to contain footer".to_string(),
+        ));
+    }
+    let encrypted_payload = &payload_bytes[..payload_bytes.len() - FOOTER_SIZE];
+
     let decrypted = Zeroizing::new(
-        match unpack_payload(Cursor::new(&payload_bytes), &decryption_key) {
+        match unpack_payload(Cursor::new(encrypted_payload), &decryption_key) {
             Ok((bytes, _header)) => bytes,
-            Err(SealError::DecryptionFailed(_)) => {
+            Err(SealError::DecryptionFailed(msg)) => {
                 eprintln!(
                     "ERROR: fingerprint mismatch — sandbox environment has changed, re-provisioning required"
                 );
@@ -156,7 +177,10 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
     decryption_key.zeroize();
     master_secret.zeroize();
 
-    cleanup::self_delete()?;
+    // Only self-delete when running from embedded payload (not explicit --payload)
+    if cli.payload.is_none() || cli.payload.as_deref() == Some("self") {
+        cleanup::self_delete()?;
+    }
 
     let executor = MemfdExecutor::new(KernelMemfdOps);
     let config = ExecConfig {
@@ -184,7 +208,18 @@ fn derive_decryption_key(
     binary_for_integrity: &[u8],
 ) -> Result<[u8; 32], SealError> {
     let stable_hash = canonicalize_stable(snapshot);
+
     let env_key = derive_env_key(master_secret, &stable_hash, user_fingerprint)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let regions = snapfzz_seal_core::integrity::find_integrity_regions(binary_for_integrity)?;
+        let _integrity_hash = snapfzz_seal_core::integrity::compute_binary_integrity_hash(
+            binary_for_integrity,
+            &regions,
+        )?;
+    }
+
     let integrity_bound_key =
         derive_key_with_integrity_from_binary(&env_key, binary_for_integrity)?;
 
@@ -246,6 +281,13 @@ fn load_payload_bytes(payload_arg: Option<&str>) -> Result<Vec<u8>, SealError> {
     };
 
     extract_payload_from_assembled_binary(&binary_bytes)
+}
+
+fn load_raw_binary(payload_arg: Option<&str>) -> Result<Vec<u8>, SealError> {
+    match payload_arg {
+        Some(path) if !path.eq_ignore_ascii_case("self") => Ok(std::fs::read(path)?),
+        _ => std::fs::read("/proc/self/exe").map_err(Into::into),
+    }
 }
 
 pub fn extract_footer(payload_bytes: &[u8]) -> Result<PayloadFooter, SealError> {
@@ -327,6 +369,54 @@ fn find_marker(haystack: &[u8], marker: &[u8]) -> Option<usize> {
         .position(|window| window == marker)
 }
 
+fn find_marker_with_slot(haystack: &[u8], marker: &[u8; 32], slot_len: usize) -> Option<usize> {
+    let mut search_from = 0usize;
+
+    while search_from + marker.len() <= haystack.len() {
+        let relative_offset = find_marker(&haystack[search_from..], marker)?;
+        let marker_offset = search_from + relative_offset;
+        if marker_is_followed_by_valid_slot(haystack, marker_offset, slot_len) {
+            return Some(marker_offset);
+        }
+        search_from = marker_offset + marker.len();
+    }
+
+    None
+}
+
+fn marker_is_followed_by_valid_slot(
+    haystack: &[u8],
+    marker_offset: usize,
+    slot_len: usize,
+) -> bool {
+    let slot_start = marker_offset + 32;
+    let slot_end = slot_start + slot_len;
+
+    if haystack.len() < slot_end {
+        return false;
+    }
+
+    // Check that the slot doesn't contain any other markers
+    let slot = &haystack[slot_start..slot_end];
+
+    // Reject if slot contains sentinel, tamper marker, or secret markers
+    if slot
+        .windows(32)
+        .any(|w| w == LAUNCHER_PAYLOAD_SENTINEL || w == LAUNCHER_TAMPER_MARKER)
+    {
+        return false;
+    }
+
+    for idx in 0..SHAMIR_TOTAL_SHARES {
+        let secret_marker = get_secret_marker(idx);
+        if slot.windows(32).any(|w| w == secret_marker) {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn find_last_marker(haystack: &[u8], marker: &[u8]) -> Option<usize> {
     haystack
         .windows(marker.len())
@@ -352,10 +442,13 @@ fn decode_user_fingerprint(user_fingerprint_hex: Option<String>) -> Result<[u8; 
     Ok(out)
 }
 
-fn resolve_binary_for_integrity(payload_arg: Option<&str>) -> Result<Vec<u8>, SealError> {
-    match payload_arg {
-        Some(path) if !path.eq_ignore_ascii_case("self") => std::fs::read(path).map_err(Into::into),
-        _ => std::fs::read("/proc/self/exe").map_err(Into::into),
+fn strip_signature_block(data: &[u8]) -> &[u8] {
+    if data.len() >= SIG_BLOCK_SIZE
+        && &data[data.len() - SIG_BLOCK_SIZE..data.len() - SIG_BLOCK_SIZE + 4] == SIG_MAGIC
+    {
+        &data[..data.len() - SIG_BLOCK_SIZE]
+    } else {
+        data
     }
 }
 
@@ -372,8 +465,11 @@ fn extract_embedded_master_secret(payload_bytes: &[u8]) -> Option<[u8; 32]> {
 
     for i in 0..SHAMIR_TOTAL_SHARES {
         let marker = get_secret_marker(i);
-        let Some(marker_offset) = find_marker(payload_bytes, marker) else {
-            tracing::warn!("embedded launcher secret marker {} missing", i + 1);
+        let Some(marker_offset) = find_marker_with_slot(payload_bytes, marker, 32) else {
+            tracing::warn!(
+                "embedded launcher secret marker {} missing or invalid slot",
+                i + 1
+            );
             continue;
         };
 
@@ -408,15 +504,15 @@ fn extract_embedded_master_secret(payload_bytes: &[u8]) -> Option<[u8; 32]> {
 
 fn verify_launcher_integrity(
     expected_hash: &[u8; 32],
-    payload_arg: Option<&str>,
+    full_binary: &[u8],
 ) -> Result<(), SealError> {
     #[cfg(target_os = "linux")]
     {
-        let full_binary = resolve_binary_for_integrity(payload_arg)?;
-        let regions = find_integrity_regions(&full_binary)?;
-        let launcher_hash = compute_binary_integrity_hash(&full_binary, &regions)?;
+        let regions = find_integrity_regions(full_binary)?;
+        let launcher_hash = compute_binary_integrity_hash(full_binary, &regions)?;
 
         if launcher_hash == *expected_hash {
+            tracing::info!("launcher integrity verified");
             Ok(())
         } else {
             tracing::error!(
@@ -431,7 +527,7 @@ fn verify_launcher_integrity(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = expected_hash;
-        let _ = payload_arg;
+        let _ = full_binary;
         tracing::warn!("launcher integrity verification is skipped on non-Linux platforms");
         Ok(())
     }
@@ -807,7 +903,7 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn verify_launcher_integrity_skips_on_non_linux() {
-        verify_launcher_integrity(&[0xAB; 32], None)
+        verify_launcher_integrity(&[0xAB; 32], &[0xAA; 64])
             .expect("non-linux should skip integrity check");
     }
 
@@ -815,20 +911,15 @@ mod tests {
     #[test]
     fn verify_launcher_integrity_detects_mismatch_on_linux() {
         let launcher = launcher_with_secret_slots(96, 32);
-        let temp = std::env::temp_dir().join("snapfzz-seal-integrity-test");
-        std::fs::write(&temp, &launcher).unwrap();
 
         let regions = find_integrity_regions(&launcher).expect("regions");
         let expected_hash = compute_binary_integrity_hash(&launcher, &regions).expect("hash");
 
-        let err = verify_launcher_integrity(&[0xCC; 32], Some(temp.to_str().unwrap()))
-            .expect_err("wrong hash must fail");
+        let err =
+            verify_launcher_integrity(&[0xCC; 32], &launcher).expect_err("wrong hash must fail");
         assert!(matches!(err, SealError::TamperDetected));
 
-        verify_launcher_integrity(&expected_hash, Some(temp.to_str().unwrap()))
-            .expect("correct hash should pass");
-
-        let _ = std::fs::remove_file(&temp);
+        verify_launcher_integrity(&expected_hash, &launcher).expect("correct hash should pass");
     }
 
     #[test]

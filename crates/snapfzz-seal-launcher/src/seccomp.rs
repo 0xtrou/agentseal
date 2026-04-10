@@ -62,6 +62,10 @@ const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     55,  // getsockopt
     56,  // clone (required: fork/exec child agent process)
     435, // clone3 (required: fork/exec child agent process)
+    59,  // execve (required: subprocess execution, e.g., curl for API calls)
+    322, // execveat (required: fexecve/memfd execution - CRITICAL for launcher!)
+    61,  // wait4 (required: subprocess reap, e.g., waiting on curl child)
+    247, // waitid (required: subprocess reap alternative)
     7,   // poll
     271, // ppoll
     23,  // select
@@ -70,6 +74,59 @@ const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     6,   // lstat
     63,  // uname
     318, // getrandom
+    // Additional syscalls for subprocess/network operations
+    2,   // open
+    257, // openat
+    87,  // unlink
+    263, // unlinkat
+    22,  // pipe
+    72,  // fcntl
+    16,  // ioctl
+    79,  // getcwd
+    80,  // chdir
+    81,  // fchdir
+    90,  // chmod
+    91,  // fchmod
+    83,  // mkdir
+    84,  // rmdir
+    51,  // getsockname
+    52,  // getpeername
+    62,  // kill
+    109, // setpgid
+    111, // getpgrp
+    112, // setsid
+    124, // getsid
+    97,  // getrlimit
+    160, // setrlimit
+    261, // prlimit64
+    15,  // rt_sigreturn
+    19,  // readv
+    20,  // writev
+    53,  // socketpair
+    // PyInstaller onefile and process management
+    356, // memfd_create (critical for PyInstaller onefile extraction)
+    240, // futex (thread/process synchronization)
+    98,  // statfs (filesystem info for PyInstaller)
+    99,  // fstatfs
+    165, // getresuid
+    166, // getresgid
+    122, // capget
+    123, // capset
+    // Go runtime syscalls
+    218, // set_tid_address (Go thread management)
+    273, // set_robust_list (Go futex robust lists)
+    28,  // madvise (Go memory management)
+    27,  // mincore (Go memory checking)
+    186, // gettid (Go thread ID)
+    169, // gettimeofday (Go time)
+    203, // sched_getaffinity (Go CPU affinity)
+    204, // sched_setaffinity (Go CPU affinity)
+    95,  // umask (Go file mode)
+    229, // clock_getres (Go clock resolution)
+    307, // sendmmsg (Go batch network I/O)
+    299, // recvmmsg (Go batch network I/O)
+    96,  // getgroups (Go group info)
+    115, // getgroups32
 ];
 #[cfg(target_os = "linux")]
 pub(crate) fn allowed_syscalls() -> &'static [i64] {
@@ -138,8 +195,8 @@ mod tests {
         for syscall_nr in [
             0_i64, 1, 3, 60, 231, 202, 13, 14, 131, 9, 11, 10, 12, 158, 257, 5, 8, 217, 332, 262,
             89, 21, 439, 293, 32, 33, 292, 291, 233, 232, 281, 228, 35, 39, 110, 102, 104, 107,
-            108, 41, 42, 44, 45, 47, 46, 48, 49, 50, 288, 54, 55, 56, 435, 7, 271, 23, 270, 4, 6,
-            63, 318,
+            108, 41, 42, 44, 45, 47, 46, 48, 49, 50, 288, 54, 55, 56, 59, 61, 247, 435, 7, 271, 23,
+            270, 4, 6, 63, 318,
         ] {
             assert!(
                 allowed.contains(&syscall_nr),

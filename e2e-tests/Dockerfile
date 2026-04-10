@@ -45,6 +45,7 @@ COPY --from=builder /build/target/release/seal /usr/local/bin/
 COPY --from=builder /build/target/release/seal-launcher /usr/local/bin/
 COPY --from=builder /build/examples /app/examples
 COPY --from=builder /build/e2e-tests/run_tests.sh /app/
+COPY --from=builder /build/e2e-tests/full_interaction_test.sh /app/
 
 RUN chmod +x /app/run_tests.sh
 

@@ -19,12 +19,13 @@ pub fn apply_protections() -> Result<Vec<String>, SealError> {
         Ok(()) => {
             tracing::info!("applied anti-debug protection: ptrace_traceme");
             applied.push("ptrace_traceme".to_string());
-            Ok(applied)
         }
-        Err(err) => Err(SealError::InvalidInput(format!(
-            "anti-debug check failed: ptrace TRACEME rejected ({err})"
-        ))),
+        Err(err) => {
+            tracing::warn!("ptrace TRACEME unavailable: {err}");
+        }
     }
+
+    Ok(applied)
 }
 
 #[cfg(not(target_os = "linux"))]

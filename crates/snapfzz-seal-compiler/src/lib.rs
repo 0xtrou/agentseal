@@ -7,6 +7,7 @@ pub mod whitebox_embed;
 
 use clap::{Parser, ValueEnum};
 use snapfzz_seal_core::{error::SealError, secret::generate_master_secret, types::AgentMode};
+use snapfzz_seal_fingerprint::{FingerprintCollector, canonical::canonicalize_stable};
 use std::{path::PathBuf, str::FromStr};
 
 use crate::backend::{CompileBackend, GoBackend, NuitkaBackend, PyInstallerBackend};
@@ -29,7 +30,7 @@ pub struct Cli {
     #[arg(
         long,
         default_value = "auto",
-        help = "64-hex sandbox identity. 'auto' generates a random binding nonce (not a real sandbox measurement). Use 'seal fingerprint' to collect an actual fingerprint."
+        help = "64-hex sandbox identity. 'auto' collects the current environment's stable fingerprint. Provide a hex string to bind to a specific sandbox."
     )]
     pub sandbox_fingerprint: String,
     #[arg(long)]
@@ -62,7 +63,11 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
 
     let user_fingerprint = parse_hex_32(&cli.user_fingerprint, "user fingerprint")?;
     let stable_fingerprint_hash = if cli.sandbox_fingerprint == "auto" {
-        generate_master_secret()
+        let collector = FingerprintCollector::new();
+        let snapshot = collector.collect_stable_only().map_err(|e| {
+            SealError::InvalidInput(format!("failed to collect sandbox fingerprint: {}", e))
+        })?;
+        canonicalize_stable(&snapshot)
     } else {
         parse_hex_32(&cli.sandbox_fingerprint, "sandbox fingerprint")?
     };
