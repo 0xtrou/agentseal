@@ -54,8 +54,7 @@ pub fn compile_with_go(config: &GoConfig) -> Result<PathBuf, SealError> {
     let mut command = Command::new("go");
     command
         .arg("build")
-        .arg("-ldflags")
-        .arg("-s -w")
+        .arg("-ldflags=-s -w")
         .arg("-o")
         .arg(&output_path)
         .arg(".");
