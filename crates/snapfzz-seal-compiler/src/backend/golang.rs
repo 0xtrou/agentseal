@@ -55,7 +55,7 @@ pub fn compile_with_go(config: &GoConfig) -> Result<PathBuf, SealError> {
     command
         .arg("build")
         .arg("-ldflags")
-        .args(["-s", "-w -extldflags \"-static\""])
+        .arg("-s -w")
         .arg("-o")
         .arg(&output_path)
         .arg(".");
