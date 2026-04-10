@@ -6,4 +6,7 @@ pub mod tamper;
 pub mod crypto;
 pub mod payload;
 pub mod derive;
+pub mod integrity;
 pub mod signing;
+pub mod shamir;
+pub mod whitebox;
