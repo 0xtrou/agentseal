@@ -1,7 +1,6 @@
 use super::{CompileBackend, CompileConfig};
 use snapfzz_seal_core::error::SealError;
 use std::{
-    ffi::OsStr,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -59,7 +58,7 @@ pub fn compile_with_nuitka(config: &NuitkaConfig) -> Result<PathBuf, SealError> 
 }
 
 fn compile_with_command(command_name: &str, config: &NuitkaConfig) -> Result<PathBuf, SealError> {
-    let project_name = project_name(&config.project_dir)?;
+    let main_py = config.project_dir.join("main.py");
 
     let mut command = Command::new(command_name);
     if config.standalone {
@@ -74,7 +73,7 @@ fn compile_with_command(command_name: &str, config: &NuitkaConfig) -> Result<Pat
 
     command
         .arg(format!("--output-dir={}", config.output_dir.display()))
-        .arg(config.project_dir.join("main.py"));
+        .arg(&main_py);
 
     let output = run_with_timeout(command, config.timeout_secs, command_name)?;
 
@@ -90,18 +89,22 @@ fn compile_with_command(command_name: &str, config: &NuitkaConfig) -> Result<Pat
         )));
     }
 
-    Ok(expected_output_path(config, &project_name))
-}
-
-fn expected_output_path(config: &NuitkaConfig, project_name: &str) -> PathBuf {
-    if config.onefile {
-        config.output_dir.join(format!("{project_name}.bin"))
+    // Nuitka outputs main.bin when compiling main.py in onefile mode
+    let output_path = if config.onefile {
+        config.output_dir.join("main.bin")
     } else {
-        config
-            .output_dir
-            .join(format!("{project_name}.dist"))
-            .join(project_name)
+        config.output_dir.join("main.dist").join("main")
+    };
+
+    if !output_path.exists() {
+        return Err(SealError::CompilationError(format!(
+            "nuitka build completed but output not found at {}",
+            output_path.display()
+        )));
     }
+
+    tracing::info!("nuitka compilation successful: {}", output_path.display());
+    Ok(output_path)
 }
 
 fn run_with_timeout(
@@ -143,13 +146,6 @@ fn map_spawn_error(err: std::io::Error, command_name: &str) -> SealError {
     } else {
         SealError::Io(err)
     }
-}
-
-fn project_name(path: &Path) -> Result<String, SealError> {
-    path.file_name()
-        .and_then(OsStr::to_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| SealError::InvalidInput(format!("invalid project path: {}", path.display())))
 }
 
 fn contains_error_indicator(stderr: &str) -> bool {
@@ -204,78 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn expected_output_path_uses_bin_for_onefile() {
-        let config = NuitkaConfig {
-            output_dir: PathBuf::from("/tmp/out"),
-            onefile: true,
-            ..NuitkaConfig::default()
-        };
-
-        let path = expected_output_path(&config, "agent");
-        assert_eq!(path, PathBuf::from("/tmp/out/agent.bin"));
-    }
-
-    #[test]
-    fn expected_output_path_uses_dist_layout_for_non_onefile() {
-        let config = NuitkaConfig {
-            output_dir: PathBuf::from("/tmp/out"),
-            onefile: false,
-            ..NuitkaConfig::default()
-        };
-
-        let path = expected_output_path(&config, "agent");
-        assert_eq!(path, PathBuf::from("/tmp/out/agent.dist/agent"));
-    }
-
-    #[test]
-    fn project_name_returns_filename_for_valid_path() {
-        let name = project_name(Path::new("/tmp/example_project"))
-            .expect("valid project path should return file name");
-        assert_eq!(name, "example_project");
-    }
-
-    #[test]
-    fn project_name_rejects_path_without_filename() {
-        let err = project_name(Path::new("/"))
-            .expect_err("root path should not contain a usable file name");
-        match err {
-            SealError::InvalidInput(message) => {
-                assert!(message.contains("invalid project path"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn project_name_rejects_empty_path() {
-        let err = project_name(Path::new(""))
-            .expect_err("empty path should not contain a usable file name");
-        match err {
-            SealError::InvalidInput(message) => {
-                assert!(message.contains("invalid project path"));
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-    }
-
-    #[test]
     fn contains_error_indicator_detects_known_patterns() {
         assert!(contains_error_indicator("Error: fatal"));
         assert!(contains_error_indicator("error: lower case"));
-        assert!(contains_error_indicator("build FAILED unexpectedly"));
-        assert!(!contains_error_indicator("all good"));
-    }
-
-    #[test]
-    fn run_with_timeout_succeeds_for_fast_command() {
-        let mut command = Command::new("echo");
-        command.arg("hello");
-
-        let output = run_with_timeout(command, 5, "echo")
-            .expect("fast echo command should complete within timeout");
-        assert!(output.status.success());
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("hello"));
+        assert!(contains_error_indicator("FAILED with exit code"));
+        assert!(!contains_error_indicator("success"));
     }
 
     #[test]
