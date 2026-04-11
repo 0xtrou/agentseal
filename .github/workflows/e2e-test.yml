@@ -44,11 +44,11 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --features snapfzz-seal-launcher/ci-bypass
 
-  build-binaries:
-    name: Build Binaries
+  build-binaries-ci:
+    name: Build Binaries (CI)
     runs-on: ubuntu-latest
     needs: lint-and-test
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -67,7 +67,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build release
+      - name: Build release (CI)
         env:
           BUILD_ID: ${{ github.sha }}
         run: |
@@ -79,21 +79,66 @@ jobs:
           ls -la target/release/seal
           ls -la target/release/seal-launcher
 
-      - name: Upload binaries
+      - name: Upload binaries (CI)
         uses: actions/upload-artifact@v4
         with:
-          name: binaries
+          name: binaries-ci
           path: |
             target/release/seal
             target/release/seal-launcher
           if-no-files-found: error
           retention-days: 1
 
+  build-binaries-release:
+    name: Build Binaries (Release)
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release (production)
+        env:
+          BUILD_ID: ${{ github.sha }}
+        run: |
+          cargo build --release -p snapfzz-seal
+          cargo build --release -p snapfzz-seal-launcher
+
+      - name: Verify binaries exist
+        run: |
+          ls -la target/release/seal
+          ls -la target/release/seal-launcher
+
+      - name: Upload binaries (release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-release
+          path: |
+            target/release/seal
+            target/release/seal-launcher
+          if-no-files-found: error
+          retention-days: 7
+
   e2e-pyinstaller:
     name: E2E - PyInstaller
     runs-on: ubuntu-latest
-    needs: build-binaries
-    
+    needs: build-binaries-ci
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -101,7 +146,7 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          name: binaries
+          name: binaries-ci
           path: binaries
 
       - name: Prepare binaries
@@ -176,8 +221,8 @@ jobs:
   e2e-nuitka:
     name: E2E - Nuitka
     runs-on: ubuntu-latest
-    needs: build-binaries
-    
+    needs: build-binaries-ci
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -185,7 +230,7 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          name: binaries
+          name: binaries-ci
           path: binaries
 
       - name: Prepare binaries
@@ -265,8 +310,8 @@ jobs:
   e2e-golang:
     name: E2E - Go
     runs-on: ubuntu-latest
-    needs: build-binaries
-    
+    needs: build-binaries-ci
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -274,7 +319,7 @@ jobs:
       - name: Download binaries
         uses: actions/download-artifact@v4
         with:
-          name: binaries
+          name: binaries-ci
           path: binaries
 
       - name: Prepare binaries
@@ -343,13 +388,44 @@ jobs:
           fi
           echo "✓ Go E2E complete (exit=$LAUNCH_EXIT)"
 
+  verify-release-binary:
+    name: Verify Release Binary
+    runs-on: ubuntu-latest
+    needs: build-binaries-release
+
+    steps:
+      - name: Download binaries (release)
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-release
+          path: target/release
+
+      - name: Make binaries executable
+        run: chmod +x target/release/seal target/release/seal-launcher
+
+      - name: Assert ci-bypass string absent from production launcher
+        run: |
+          COUNT=$(strings target/release/seal-launcher | grep -c SNAPFZZ_SEAL_SKIP_ANALYSIS_CHECK || true)
+          echo "Occurrences of SNAPFZZ_SEAL_SKIP_ANALYSIS_CHECK in seal-launcher: $COUNT"
+          if [ "$COUNT" -ne 0 ]; then
+            echo "FAIL: ci-bypass bypass string found in production binary ($COUNT occurrences)"
+            exit 1
+          fi
+          echo "PASS: production launcher is free of ci-bypass strings"
+
   upload-artifacts:
     name: Upload Artifacts
     runs-on: ubuntu-latest
-    needs: [e2e-pyinstaller, e2e-nuitka, e2e-golang]
+    needs: [e2e-pyinstaller, e2e-nuitka, e2e-golang, build-binaries-release]
     if: always()
-    
+
     steps:
+      - name: Download binaries (release)
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries-release
+          path: target/release
+
       - name: Upload sealed binaries
         uses: actions/upload-artifact@v4
         with:
