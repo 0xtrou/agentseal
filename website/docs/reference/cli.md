@@ -1,154 +1,199 @@
-# CLI Commands
+---
+sidebar_position: 1
+---
 
-This reference describes the `seal` command-line interface.
+# CLI Reference
+
+This reference documents every subcommand of the `seal` command-line interface. Flag names, types, and defaults are derived directly from the clap struct definitions in `crates/snapfzz-seal/src/`.
 
 ## Global behavior
 
 - Binary name: `seal`
-- Configuration root in examples: `~/.snapfzz-seal/`
-- On command failure, process exits with non-zero status.
+- On command failure the process prints the error to stderr and exits with code `1`.
+- Log verbosity is controlled by `RUST_LOG` (see [Environment variables](#environment-variables)).
 
 ## Command summary
 
 | Command | Purpose |
-|---|---|
-| `seal compile` | Compile project, derive keys, assemble sealed artifact |
-| `seal keygen` | Generate builder signing key pair |
-| `seal launch` | Verify and launch sealed artifact |
-| `seal server` | Start orchestration API service |
-| `seal sign` | Append signature block to binary |
-| `seal verify` | Verify signature with embedded or pinned key |
+|---------|---------|
+| `seal compile` | Compile a project, derive keys, assemble a sealed artifact |
+| `seal keygen` | Generate a builder Ed25519 signing key pair |
+| `seal launch` | Verify and launch a sealed artifact |
+| `seal server` | Start the orchestration API service |
+| `seal sign` | Append a signature block to a sealed binary |
+| `seal verify` | Verify the signature embedded in a sealed binary |
 
-## `seal compile`
-
-```bash
-seal compile \
-  --project <path> \
-  --user-fingerprint <64-hex> \
-  --sandbox-fingerprint <auto|64-hex> \
-  --output <path> \
-  [--launcher <path>] \
-  [--backend <nuitka|pyinstaller|go>] \
-  [--mode <batch|interactive>]
-```
-
-Flags:
-
-- `--project`: source project directory
-- `--user-fingerprint`: 32-byte fingerprint in hex (64 hex characters)
-- `--sandbox-fingerprint`: `auto` or 32-byte hex value (64 hex characters)
-- `--output`: destination file path
-- `--launcher`: explicit launcher path override (or use `SNAPFZZ_SEAL_LAUNCHER_PATH`)
-- `--backend`: compile backend selection (`nuitka`, `pyinstaller`, or `go`; default: `nuitka`)
-- `--mode`: payload mode byte selection (`batch` or `interactive`)
-
-**Requirements by backend**:
-- **Nuitka**: `pip install nuitka`, C compiler (gcc/clang)
-- **PyInstaller**: `pip install pyinstaller`
-- **Go**: Go toolchain 1.21+, `go.mod` in project root
-- Launcher binary must exist (build with `cargo build --release`)
+---
 
 ## `seal keygen`
+
+Generate an Ed25519 signing key pair for the builder identity.
 
 ```bash
 seal keygen [--keys-dir <path>]
 ```
 
-Flags:
+### Flags
 
-- `--keys-dir`: destination directory for `builder_secret.key` and `builder_public.key`
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--keys-dir` | path | `~/.snapfzz-seal/keys` | Destination directory for key files |
 
-Default:
+### Output files
 
-- `~/.snapfzz-seal/keys`
+- `<keys-dir>/builder_secret.key` — hex-encoded 32-byte Ed25519 signing key
+- `<keys-dir>/builder_public.key` — hex-encoded 32-byte Ed25519 verifying key
 
-Output:
+### Stdout
 
 ```text
 secret: /home/<user>/.snapfzz-seal/keys/builder_secret.key
 public: /home/<user>/.snapfzz-seal/keys/builder_public.key
-builder id: <16-hex-prefix>
+builder id: <first 16 hex chars of public key>
 ```
 
+---
+
+## `seal compile`
+
+Compile a project, derive binding keys, and assemble a sealed artifact.
+
+```bash
+seal compile \
+  --project <path> \
+  --user-fingerprint <64-hex> \
+  --output <path> \
+  [--sandbox-fingerprint <auto|64-hex>] \
+  [--launcher <path>] \
+  [--backend <nuitka|pyinstaller|go>] \
+  [--mode <batch|interactive>]
+```
+
+### Flags
+
+| Flag | Type | Default | Required | Description |
+|------|------|---------|----------|-------------|
+| `--project` | path | — | Yes | Source project directory |
+| `--user-fingerprint` | string | — | Yes | 64 hex characters (32-byte user binding value) |
+| `--output` | path | — | Yes | Destination path for the assembled sealed binary |
+| `--sandbox-fingerprint` | string | `auto` | No | `auto` collects the current environment's stable fingerprint; alternatively supply 64 hex characters to bind to a specific sandbox |
+| `--launcher` | path | — | No | Explicit path to the launcher binary; falls back to `SNAPFZZ_SEAL_LAUNCHER_PATH` if omitted |
+| `--backend` | enum | `nuitka` | No | Compile backend: `nuitka`, `pyinstaller`, or `go` |
+| `--mode` | enum | `batch` | No | Agent mode byte written into the payload header: `batch` or `interactive` |
+
+### Backend requirements
+
+| Backend | Requirements |
+|---------|-------------|
+| `nuitka` | `pip install nuitka`, C compiler (gcc or clang) |
+| `pyinstaller` | `pip install pyinstaller` |
+| `go` | Go toolchain 1.21+, `go.mod` present in project root |
+
+The launcher binary must exist before running compile. Build it with `cargo build --release` using the same `BUILD_ID` used to build `snapfzz-seal`. See [BUILD_ID](#build_id) for details.
+
+### Stdout on success
+
+```text
+compiled and assembled binary: <output-path> (<N> bytes)
+```
+
+---
+
 ## `seal sign`
+
+Append an Ed25519 signature block to a sealed binary.
 
 ```bash
 seal sign --key <path> --binary <path>
 ```
 
-Flags:
+### Flags
 
-- `--key`: builder secret key path (hex-encoded 32-byte key)
-- `--binary`: target artifact to sign in place
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--key` | path | Yes | Path to `builder_secret.key` (hex-encoded 32-byte signing key) |
+| `--binary` | path | Yes | Sealed artifact to sign in place |
 
-No output on success.
+The public key is read automatically from `builder_public.key` in the same directory as `--key`. Both files must exist.
+
+The signature block appended to the binary has the format:
+
+```
+<original binary bytes> || "ASL\x02" || <64-byte Ed25519 signature> || <32-byte public key>
+```
+
+No output is produced on success.
+
+---
 
 ## `seal verify`
+
+Verify the Ed25519 signature embedded in a sealed binary.
 
 ```bash
 seal verify --binary <path> [--pubkey <path>]
 ```
 
-Flags:
+### Flags
 
-- `--binary`: artifact path
-- `--pubkey`: optional pinned public key path
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--binary` | path | Yes | Sealed artifact to verify |
+| `--pubkey` | path | No | Pinned builder public key file (hex-encoded 32 bytes); if omitted the embedded key is used (TOFU mode) |
 
-Output modes:
+### Output
 
-- `VALID (pinned to explicit public key)` — Signature matches pinned key
-- `VALID (TOFU: using embedded key — use --pubkey for pinned builder identity)` — Signature valid but using embedded key
-- `INVALID` — Signature verification failed
-- `WARNING: unsigned` — No signature block found
+| Message | Meaning |
+|---------|---------|
+| `VALID (pinned to explicit public key)` | Signature verified against the supplied `--pubkey` |
+| `VALID (TOFU: using embedded key — use --pubkey for pinned builder identity)` | Signature valid but no `--pubkey` was supplied |
+| `INVALID` | Signature verification failed |
+| `WARNING: unsigned` | No `ASL\x02` signature block found |
 
 :::note
 
-`INVALID` result still exits with code `0`. Check output for verification status.
+`seal verify` exits with code `0` in all cases, including `INVALID` and `WARNING: unsigned`. Parse the printed message to determine the actual result.
 
 :::
 
+---
+
 ## `seal launch`
+
+Verify fingerprint binding and launch a sealed artifact.
 
 ```bash
 seal launch \
   [--payload <path>] \
   [--fingerprint-mode <stable|session>] \
   [--user-fingerprint <64-hex>] \
-  [--verbose]
+  [--verbose] \
+  [--mode <batch|interactive>] \
+  [--max-lifetime <seconds>] \
+  [--grace-period <seconds>]
 ```
 
-Flags:
+### Flags
 
-- `--payload`: explicit payload path
-- `--fingerprint-mode`: `stable` or `session` (default: `stable`)
-- `--user-fingerprint`: required for key derivation (64 hex characters)
-- `--verbose`: enables detailed logging
+| Flag | Type | Default | Forwarded to launcher | Description |
+|------|------|---------|----------------------|-------------|
+| `--payload` | string | — | Yes | Explicit path to the sealed artifact; if omitted the launcher searches for an embedded payload |
+| `--fingerprint-mode` | enum | `stable` | Yes | `stable` uses only stable host signals; `session` adds ephemeral namespace signals for session-scoped binding |
+| `--user-fingerprint` | string | — | Yes | 64 hex characters required for key derivation |
+| `--verbose` | bool | `false` | Yes | Enable detailed launcher logging |
+| `--mode` | enum | `batch` | No — parsed, not forwarded | Accepted but not passed to the launcher |
+| `--max-lifetime` | integer | — | No — parsed, not forwarded | Accepted but not passed to the launcher |
+| `--grace-period` | integer | `30` | No — parsed, not forwarded | Accepted but not passed to the launcher |
 
-### Flags Parsed but NOT Currently Wired
+:::warning[Flags with no current effect]
 
-The following flags are **accepted by the CLI but NOT forwarded to the launcher**:
+`--mode`, `--max-lifetime`, and `--grace-period` are accepted by the CLI but are not forwarded to the launcher and have no effect at runtime. They are reserved for a future implementation.
 
-- `--mode` — Parsed but ignored at runtime
-- `--max-lifetime` — Parsed but ignored at runtime
-- `--grace-period` — Parsed but ignored at runtime
+:::
 
-The launcher uses hardcoded values:
-- `grace_period_secs: 30` (not configurable)
+### Output on success
 
-These flags may be implemented in future versions. Currently, they have no effect.
-
-### Environment Variables for Launch
-
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `SNAPFZZ_SEAL_MASTER_SECRET_HEX` | Optional* | 32-byte secret in hex for key derivation fallback |
-| `SNAPFZZ_SEAL_LAUNCHER_SIZE` | Optional | Launcher-size hint for embedded payload extraction |
-
-\* Only required if no embedded secret is available. Normal `seal compile` output includes embedded secret.
-
-### Output
-
-On success, outputs JSON:
+The launcher prints an `ExecutionResult` JSON object to stdout:
 
 ```json
 {
@@ -158,7 +203,20 @@ On success, outputs JSON:
 }
 ```
 
+Subprocess exit codes are embedded in `exit_code`, not reflected in the `seal launch` process exit code.
+
+### Environment variables for launch
+
+| Variable | Description |
+|----------|-------------|
+| `SNAPFZZ_SEAL_MASTER_SECRET_HEX` | 64 hex characters (32 bytes). Used as fallback master secret when the embedded Shamir shares cannot be reconstructed. |
+| `SNAPFZZ_SEAL_LAUNCHER_SIZE` | Integer. Explicit byte offset hint marking the boundary between the launcher binary and the appended payload. |
+
+---
+
 ## `seal server`
+
+Start the Snapfzz Seal orchestration API server.
 
 ```bash
 seal server \
@@ -167,52 +225,75 @@ seal server \
   [--output-dir <path>]
 ```
 
-Flags:
+### Flags
 
-- `--bind`: listening socket (default: `0.0.0.0:9090` in wrapper, `127.0.0.1:9090` in standalone binary)
-- `--compile-dir`: working directory for compile jobs (default: `./.snapfzz-seal/compile`)
-- `--output-dir`: artifact output directory (default: `./.snapfzz-seal/output`)
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--bind` | string | `0.0.0.0:9090` | TCP address to listen on |
+| `--compile-dir` | path | `./.snapfzz-seal/compile` | Working directory for compile jobs |
+| `--output-dir` | path | `./.snapfzz-seal/output` | Directory for compiled sealed artifacts |
 
-:::warning[No Authentication]
+The default bind address when running `seal server` (the `seal` wrapper) is `0.0.0.0:9090`. The standalone `snapfzz-seal-server` binary uses `127.0.0.1:9090` as its default.
 
-The server has **no built-in authentication or authorization**. Deploy behind an authenticated gateway.
+The server shuts down gracefully on `SIGINT` (Ctrl-C) or `SIGTERM`.
+
+:::warning[No authentication]
+
+The server has no built-in authentication or authorization. Deploy it behind an authenticated reverse proxy or API gateway. Do not expose it to untrusted networks.
 
 :::
 
+---
+
 ## Exit codes
 
-Current CLI behavior:
+| Code | Meaning |
+|------|---------|
+| `0` | Command completed without error |
+| `1` | Runtime error (printed to stderr) |
+| `2` | CLI argument parse error (clap default) |
 
-- `0`: command completed without error
-- `1`: command returned an error (runtime error)
-- `2`: CLI argument parse error (clap default)
+`seal verify` always exits with `0`. Inspect the printed message to determine verification status.
 
-Note: `seal verify` returns `0` even for `INVALID` results. Check output text.
-
-Subprocess exit codes from launched payloads are returned in JSON output, not as CLI exit codes.
+---
 
 ## Environment variables
 
 | Variable | Purpose |
 |----------|---------|
-| `SNAPFZZ_SEAL_MASTER_SECRET_HEX` | 32-byte secret in hex for launch key derivation (fallback if no embedded secret) |
-| `SNAPFZZ_SEAL_LAUNCHER_PATH` | Launcher path used by compile when `--launcher` is omitted |
-| `SNAPFZZ_SEAL_LAUNCHER_SIZE` | Optional launcher-size hint for embedded payload extraction |
-| `RUST_LOG` | Tracing verbosity (`error`, `warn`, `info`, `debug`, `trace`) |
-| `DOCKER_BIN` | Explicit Docker binary path for server sandbox backend |
+| `SNAPFZZ_SEAL_MASTER_SECRET_HEX` | 64 hex characters (32-byte master secret) used as fallback when the launcher cannot reconstruct the secret from embedded Shamir shares |
+| `SNAPFZZ_SEAL_LAUNCHER_PATH` | Launcher binary path; used by `seal compile` when `--launcher` is omitted |
+| `SNAPFZZ_SEAL_LAUNCHER_SIZE` | Integer byte-offset hint for embedded payload extraction |
+| `RUST_LOG` | Tracing verbosity filter (`error`, `warn`, `info`, `debug`, `trace`) |
+| `DOCKER_BIN` | Explicit Docker binary path for the server sandbox backend |
+| `BUILD_ID` | Build-time variable (not a runtime env var) — see below |
+
+### BUILD_ID
+
+`BUILD_ID` is a **build-time** environment variable read by the `snapfzz-seal-core` and `snapfzz-seal-launcher` build scripts. It determines the deterministic binary markers embedded in both crates. Both crates **must** be compiled with the same `BUILD_ID` or the launcher will fail to locate its embedded secret shares at runtime.
+
+```bash
+export BUILD_ID="$(openssl rand -hex 16)"
+BUILD_ID="$BUILD_ID" cargo build --release
+```
+
+If `BUILD_ID` is not set it defaults to `"dev"`, which is safe for local development as long as both crates are built together.
+
+---
 
 ## Practical examples
 
 ### Complete workflow
 
 ```bash
-# 1. Build the launcher first
-cargo build --release
+# 1. Build launcher and seal CLI with a consistent BUILD_ID
+export BUILD_ID="$(openssl rand -hex 16)"
+BUILD_ID="$BUILD_ID" cargo build --release
 
-# 2. Generate keys
+# 2. Generate builder keys
 seal keygen
 
-# 3. Generate user fingerprint
+# 3. Generate a user fingerprint
 USER_FP=$(openssl rand -hex 32)
 
 # 4. Compile and seal
@@ -239,13 +320,11 @@ seal launch \
   --user-fingerprint "$USER_FP"
 ```
 
-### Using environment variables
+### Using environment variables for compile
 
 ```bash
-# Set launcher path globally
 export SNAPFZZ_SEAL_LAUNCHER_PATH=./target/release/snapfzz-seal-launcher
 
-# Now compile without --launcher flag
 seal compile \
   --project ./agent \
   --user-fingerprint "$USER_FP" \
@@ -253,19 +332,34 @@ seal compile \
   --output ./agent.sealed
 ```
 
+### Session-mode launch
+
+```bash
+seal launch \
+  --payload ./agent.sealed \
+  --fingerprint-mode session \
+  --user-fingerprint "$USER_FP"
+```
+
+---
+
 ## Security considerations
 
-- **Use pinned key verification** — Production automation **MUST** use `--pubkey` flag, not TOFU mode.
-- **Avoid passing secrets via shell history** — **SHOULD NOT** pass secrets in shared terminal environments.
-- **Restrict server network exposure** — Server **MUST** be deployed to authenticated local interfaces or protected tunnels.
-- **Treat compile logs as potentially sensitive** — Logs **SHOULD** be protected as they may contain operational details.
+- **Use pinned key verification in production.** Automation must pass `--pubkey` to `seal verify`. TOFU mode (no `--pubkey`) trusts the key embedded in the artifact.
+- **Protect secret material from shell history.** Do not pass hex secrets as inline shell arguments in shared environments.
+- **Restrict server network exposure.** Run the server on loopback or behind an authenticated gateway; it has no built-in access control.
+- **Treat compile logs as potentially sensitive.** Logs may contain operational details about project structure and artifact paths.
+
+---
 
 ## Limitations
 
-- Exit code taxonomy is currently binary for CLI command success/failure.
-- Structured machine-readable command output is limited to selected commands.
-- `--backend-opts` for passing flags to backend tools is NOT implemented.
-- Backend auto-install is NOT implemented — tools must be pre-installed.
+- Exit codes are binary for CLI command success or failure. Structured per-command exit codes are not implemented.
+- `--mode`, `--max-lifetime`, and `--grace-period` on `seal launch` are accepted but have no effect.
+- `--backend-opts` for passing flags through to backend tools is not implemented.
+- Backend tools (Nuitka, PyInstaller, Go) must be pre-installed; automatic installation is not implemented.
+
+---
 
 ## References
 

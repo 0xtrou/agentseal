@@ -4,6 +4,8 @@ This section describes the crate-level architecture and API surface of Snapfzz S
 
 ## Workspace members
 
+The workspace contains exactly six crates:
+
 | Crate | Responsibility |
 |---|---|
 | `snapfzz-seal` | Primary CLI entrypoint (`seal`) |
@@ -11,12 +13,15 @@ This section describes the crate-level architecture and API surface of Snapfzz S
 | `snapfzz-seal-fingerprint` | Host and runtime signal collection and canonicalization |
 | `snapfzz-seal-compiler` | Project compilation, payload assembly, embed operations |
 | `snapfzz-seal-launcher` | Runtime verification, key derivation, in-memory execution |
-| `snapfzz-seal-server` | Orchestration API and sandbox dispatch |
+| `snapfzz-seal-server` | Orchestration API and Docker sandbox dispatch |
 
 ## Dependency graph
 
+The following graph reflects actual `path` dependencies declared in each crate's `Cargo.toml`. `snapfzz-seal-fingerprint` and `snapfzz-seal-core` have no internal dependencies.
+
 ```text
 snapfzz-seal (CLI)
+  -> snapfzz-seal-core
   -> snapfzz-seal-compiler
       -> snapfzz-seal-core
       -> snapfzz-seal-fingerprint
@@ -27,9 +32,10 @@ snapfzz-seal (CLI)
       -> snapfzz-seal-core
       -> snapfzz-seal-compiler
       -> snapfzz-seal-fingerprint
+  -> snapfzz-seal-fingerprint
 ```
 
-`/crates/snapfzz-seal-core` is the cryptographic and structural foundation. Most crates depend on it directly or indirectly.
+`snapfzz-seal-core` is the cryptographic and structural foundation. `snapfzz-seal-fingerprint` is a leaf crate with no dependency on any other workspace member. Note that `snapfzz-seal-server` does **not** depend on `snapfzz-seal-launcher`; the launcher is a separate binary and not consumed as a library by the server.
 
 ## API surface by crate
 
@@ -59,34 +65,42 @@ Key exported modules include:
 - `payload`: header parsing, payload packing and unpacking
 - `signing`: Ed25519 key generation, sign and verify
 - `tamper`: hash and integrity verification helpers
-- `types`: canonical constants and wire structures
+- `types`: canonical constants and wire structures (`MAGIC_BYTES`, `VERSION_V1`, `ENC_ALG_AES256_GCM`, `FMT_STREAM`, `CHUNK_SIZE`, `PayloadHeader`, `PayloadFooter`, `BackendType`, `AgentMode`)
 
 ### `snapfzz-seal-fingerprint`
 
 - `FingerprintCollector` for stable and ephemeral data capture
 - `canonicalize_stable` and `canonicalize_ephemeral` for deterministic hashing
-- source model registry through `FINGERPRINT_SOURCES`
+- Source model registry through `FINGERPRINT_SOURCES`
+
+This crate has no workspace-internal dependencies and can be compiled independently.
 
 ### `snapfzz-seal-compiler`
 
-- Backend abstraction (`CompileBackend` trait)
-- Backend implementations for language-specific builds
+- `CompileBackend` trait and three backend implementations: `NuitkaBackend`, `PyInstallerBackend`, `GoBackend`
 - `assemble` stage for launcher plus payload composition
-- marker-based embed utilities for launcher metadata
+- Marker-based embed utilities for launcher metadata
+- Decoy secret generation and embedding (`decoys`)
+- Shamir share splitting and embedding (`embed`)
+
+Detection heuristics: Nuitka and PyInstaller detect `main.py`; Go detects `go.mod`.
 
 ### `snapfzz-seal-launcher`
 
-- Signature verification
+- Signature verification before execution
 - Runtime fingerprint-driven key derivation
-- launcher integrity checks
-- memfd executor and stream I/O control
-- platform protection hooks
+- Launcher integrity checks
+- `MemfdExecutor` for in-memory execution of statically-linked ELF binaries (Go backend)
+- `TempFileExecutor` for temp-file-based execution of Python bundled binaries (PyInstaller, Nuitka)
+- seccomp BPF filter installation (Linux only)
+- Anti-debug and environment analysis (`anti_analysis`)
+- Environment variable denylist to prevent secret leakage into child processes
 
 ### `snapfzz-seal-server`
 
 - HTTP routes for compile, dispatch, and job status
-- sandbox interface trait and Docker backend
-- asynchronous job state transitions and artifact management
+- `DockerBackend` as the only sandbox implementation (hardcoded)
+- Asynchronous job state transitions and artifact management
 
 ## Practical usage example
 
@@ -98,59 +112,45 @@ seal sign --key ~/.snapfzz-seal/keys/builder_secret.key --binary ./agent.sealed
 seal launch --payload ./agent.sealed --user-fingerprint "$USER_FP"
 ```
 
-## Security Architecture
+## Security architecture
 
-### Defense-in-Depth Layers
+### Defense-in-depth layers
 
-Snapfzz Seal implements 6 security layers to protect master secrets:
+Snapfzz Seal implements multiple security layers to protect master secrets:
 
 | Layer | Module | Protection |
 |-------|--------|------------|
-| 1 | `build.rs` | Random markers |
-| 2 | `shamir.rs` | Secret sharing |
-| 3 | `decoys.rs` | Decoy secrets |
-| 4 | `anti_analysis.rs` | Debugger/VM detection |
+| 1 | `build.rs` | Compile-time random marker generation |
+| 2 | `shamir.rs` | Shamir Secret Sharing across five shares (threshold: 3) |
+| 3 | `decoys.rs` | Decoy secret set generation and embedding |
+| 4 | `anti_analysis.rs` | Runtime debugger and VM detection |
 | 5 | `integrity.rs` | Binary hash binding |
-| 6 | `whitebox/` | Lookup table cryptography |
+| 6 | `whitebox/` | White-box AES-256 lookup table cryptography (~165KB tables) |
 
-**Combined Effect:** Expert-level cryptanalysis required.
+### Key security components
 
-### Key Security Components
-
-#### snapfzz-seal-core
-- `shamir`: Shamir Secret Sharing implementation (prime field with secp256k1 modulus)
+#### `snapfzz-seal-core`
+- `shamir`: Shamir Secret Sharing (prime field with secp256k1 modulus), 5 total shares, threshold 3
 - `integrity`: ELF binary parsing and integrity verification
-- `whitebox`: White-box AES-256 with T-boxes and mixing tables (~165KB)
+- `whitebox`: White-box AES-256 with T-boxes and mixing tables
 - `build.rs`: Compile-time random marker generation
 
-#### snapfzz-seal-compiler
+#### `snapfzz-seal-compiler`
 - `decoys`: Decoy secret set generation and embedding
 - `whitebox_embed`: White-box table generation and binary embedding
 - `embed`: Shamir share splitting and embedding
 
-#### snapfzz-seal-launcher
+#### `snapfzz-seal-launcher`
 - `anti_analysis`: Runtime environment analysis (debugger, VM, timing)
+- `seccomp`: BPF allowlist filter for Linux x86_64
 - `integrity`: Binary hash computation and verification
-- `protection`: Process hardening and security hooks
-
-### Security Guarantees
-
-**Before (Pre-v0.2):**
-- Master secret trivially extractable
-- Basic tools sufficient for extraction
-
-**After (v0.2+):**
-- Master secret protected by 6 layers
-- Key spread across ~165KB of lookup tables
-- Requires expert-level reverse engineering
-
-The above flow traverses `snapfzz-seal` -> compiler/core -> launcher/core/fingerprint crates.
 
 ## Security considerations
 
 - Cryptographic operations are centralized in `snapfzz-seal-core` to reduce duplicated logic.
-- Signature verification is executed by launcher path before payload execution.
-- Server crate should be deployed with strict perimeter controls due to orchestration capabilities.
+- Signature verification is executed by the launcher before payload execution.
+- The server crate should be deployed with strict perimeter controls due to its orchestration capabilities.
+- The `unsafe_code = "deny"` workspace lint is enforced; the few `#[allow(unsafe_code)]` sites (seccomp, memfd) are explicitly annotated.
 
 ## Limitations
 
@@ -160,7 +160,7 @@ The above flow traverses `snapfzz-seal` -> compiler/core -> launcher/core/finger
 
 ## References
 
-### Cryptographic Foundations
+### Cryptographic foundations
 
 - **AES-GCM**: Dworkin, M. (2007). NIST SP 800-38D.
 - **Shamir Secret Sharing**: Shamir, A. (1979). "How to Share a Secret". CACM 22(11):612-613.

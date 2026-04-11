@@ -4,13 +4,14 @@ sidebar_position: 2
 
 # API Reference
 
-This document describes the REST API for Snapfzz Seal orchestration server.
+This document describes the HTTP API exposed by the Snapfzz Seal orchestration server. Routes are registered in `crates/snapfzz-seal-server/src/routes.rs`.
 
 ## Base URL
 
-Default: `http://0.0.0.0:9090`
-
-Standalone binary default: `http://127.0.0.1:9090`
+| Binary | Default bind address |
+|--------|---------------------|
+| `seal server` (CLI wrapper) | `http://0.0.0.0:9090` |
+| `snapfzz-seal-server` (standalone) | `http://127.0.0.1:9090` |
 
 ## Authentication
 
@@ -18,17 +19,19 @@ Standalone binary default: `http://127.0.0.1:9090`
 
 :::danger
 
-Deploy the server behind an authenticated gateway (reverse proxy, API gateway, etc.). Do not expose directly to untrusted networks.
+Deploy the server behind an authenticated reverse proxy or API gateway. Do not expose it directly to untrusted networks.
 
 :::
+
+---
 
 ## Endpoints
 
 ### POST /api/v1/compile
 
-Compile and seal an agent from source.
+Compile and seal an agent from source. Returns immediately with a job identifier; compilation runs asynchronously.
 
-**Request**:
+**Request body** (`application/json`):
 
 ```json
 {
@@ -38,51 +41,50 @@ Compile and seal an agent from source.
 }
 ```
 
-**Fields**:
+**Request fields**:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `project_dir` | string | Yes | Path to agent project (must be within `compile_dir`) |
+| `project_dir` | string | Yes | Path to the agent project directory. Must resolve to a path inside the server's configured `compile_dir`. |
 | `user_fingerprint` | string | Yes | 64 hex characters (32 bytes) |
-| `sandbox_fingerprint` | string | Yes | `auto` or 64 hex characters |
+| `sandbox_fingerprint` | string | Yes | `auto` to fingerprint the current environment, or 64 hex characters to bind to a specific sandbox |
 
 **Response** (202 Accepted):
 
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "job_id": "job-1705312800-0-abc12345",
   "status": "pending"
 }
 ```
 
-**Notes**:
-- Compilation runs asynchronously
-- Request returns `202 Accepted` immediately
-- `project_dir` validation happens synchronously (returns `400` if invalid path)
-- Fingerprint format validation happens synchronously (returns `400` if invalid)
-- Backend tool availability checked during async compilation (causes `failed` state)
-- Use `GET /api/v1/jobs/\{job_id\}` to check progress
+**Synchronous validation errors** (400 Bad Request, JSON body):
 
-**Synchronous validation errors** (immediate `400` response):
-- `project_dir` outside `compile_dir` or doesn't exist
-- Invalid `user_fingerprint` format (not 64 hex chars)
-- Invalid `sandbox_fingerprint` format (not `auto` or 64 hex chars)
+| Condition | Error message |
+|-----------|---------------|
+| `project_dir` does not exist or cannot be resolved | `project_dir does not exist or cannot be resolved: <detail>` |
+| `project_dir` is outside `compile_dir` | `project_dir must be within the configured compile directory (<path>)` |
 
-**Async failures** (job transitions to `failed` state):
-- Backend tool (Nuitka/PyInstaller/Go) not installed
-- Compilation errors during backend execution
+All error responses use the format `{"error": "<message>"}`.
+
+**Asynchronous failures** (job transitions to `failed` state):
+
+- Backend tool (Nuitka, PyInstaller, or Go) not installed or not in `PATH`
+- Compilation errors produced by the backend tool
+
+Use `GET /api/v1/jobs/{job_id}` to poll job progress.
 
 ---
 
 ### POST /api/v1/dispatch
 
-Launch a compiled agent in a Docker sandbox.
+Dispatch a compiled and ready artifact to a Docker sandbox for execution.
 
-**Request**:
+**Request body** (`application/json`):
 
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "job_id": "job-1705312800-0-abc12345",
   "sandbox": {
     "image": "ubuntu:22.04",
     "timeout_secs": 3600,
@@ -92,52 +94,53 @@ Launch a compiled agent in a Docker sandbox.
 }
 ```
 
-**Fields**:
+**Request fields**:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `job_id` | string | Yes | Job ID from compile step |
-| `sandbox.image` | string | Yes | Docker image name |
-| `sandbox.timeout_secs` | number | Yes | Execution timeout in seconds |
-| `sandbox.memory_mb` | number | No | Memory limit in megabytes |
-| `sandbox.env` | array | No | Array of `[key, value]` pairs |
+| `job_id` | string | Yes | Job ID returned from `POST /api/v1/compile` |
+| `sandbox.image` | string | Yes | Docker image to run the artifact in |
+| `sandbox.timeout_secs` | integer | Yes | Maximum execution time in seconds |
+| `sandbox.memory_mb` | integer | No | Container memory limit in megabytes |
+| `sandbox.env` | array | No | Environment variables as an array of `["KEY", "VALUE"]` pairs |
 
 **Response** (202 Accepted):
 
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "job_id": "job-1705312800-0-abc12345",
   "status": "dispatched"
 }
 ```
 
 **Errors**:
 
-| Status | Condition | Response Body |
-|--------|-----------|---------------|
-| 404 | Job not found | `job not found` (plain text) |
-| 400 | Job not ready for dispatch | `job is not ready for dispatch` (plain text) |
+| HTTP Status | Condition | Response body |
+|-------------|-----------|---------------|
+| 404 | Job not found | `{"error": "job not found"}` |
+| 400 | Job is not in `ready` state | `{"error": "job is not ready for dispatch"}` |
 
 **Notes**:
-- Job must be in `ready` state (compile completed successfully)
-- Docker image will be pulled if not present (may trigger implicit pull by Docker daemon)
-- Execution runs asynchronously after `202` response
-- Provisioning/execution failures occur in background task and update job status to `failed`
+
+- The job must be in the `ready` state (compilation completed successfully) before dispatch.
+- The artifact is copied into the container at `/tmp/snapfzz-sealed` and executed.
+- Sandbox provisioning and execution run asynchronously after the `202` response.
+- If the sandbox destroy step fails after a successful execution the job is still marked `completed` but the error field records the destroy failure.
 
 ---
 
-### GET /api/v1/jobs/\{job_id\}
+### GET /api/v1/jobs/{job_id}
 
-Get job status and details.
+Retrieve the current status and metadata for a job.
 
-**Response**:
+**Response** (200 OK):
 
 ```json
 {
   "id": "job-1705312800-0-abc12345",
   "status": "completed",
-  "project_dir": "./my_agent",
-  "output_path": "/path/to/artifact",
+  "project_dir": "/path/to/compile/dir/my_agent",
+  "output_path": "/path/to/output/job-1705312800-0-abc12345.sealed",
   "error": null,
   "created_at": 1705312800,
   "updated_at": 1705312920,
@@ -154,36 +157,41 @@ Get job status and details.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | Job ID (format: `job-<timestamp>-<sequence>-<hex>`) |
-| `status` | string | Current job state |
-| `created_at` | number | Unix timestamp (seconds since epoch) |
-| `updated_at` | number | Unix timestamp (seconds since epoch) |
+| `id` | string | Job ID (format: `job-<unix-seconds>-<sequence>-<8-hex-chars>`) |
+| `status` | string | Current job state (see Job states below) |
+| `project_dir` | string or null | Resolved absolute path to the project directory |
+| `output_path` | string or null | Absolute path to the compiled artifact; present once compilation succeeds |
+| `error` | string or null | Error message; present on failure or partial failure |
+| `created_at` | integer | Unix timestamp in seconds |
+| `updated_at` | integer | Unix timestamp in seconds |
+| `sandbox_id` | string or null | Docker container ID; present once execution begins |
+| `result` | object or null | Execution result; present once execution completes |
 
-**Job States**:
+**Job states**:
 
 | State | Description |
 |-------|-------------|
-| `pending` | Job created, waiting for compilation |
+| `pending` | Job created, waiting for compilation to begin |
 | `compiling` | Compilation in progress |
-| `ready` | Compilation complete, ready for dispatch |
-| `dispatched` | Sent to sandbox, not yet running |
-| `running` | Currently executing in sandbox |
-| `completed` | Execution finished successfully |
-| `failed` | Compilation or execution failed |
+| `ready` | Compilation succeeded; artifact available for dispatch |
+| `dispatched` | Submitted to the sandbox; not yet running |
+| `running` | Executing inside the Docker container |
+| `completed` | Execution finished |
+| `failed` | Compilation or execution failed; see `error` field |
 
 **Errors**:
 
-| Status | Error |
-|--------|-------|
-| 404 | `job not found` |
+| HTTP Status | Condition | Response body |
+|-------------|-----------|---------------|
+| 404 | Job not found | `{"error": "job not found"}` |
 
 ---
 
-### GET /api/v1/jobs/\{job_id\}/results
+### GET /api/v1/jobs/{job_id}/results
 
-Get execution results for a completed job.
+Retrieve the execution result for a job. Returns the same job for any existing job ID regardless of state; `result` is `null` until execution completes.
 
-**Response**:
+**Response** (200 OK):
 
 ```json
 {
@@ -197,33 +205,27 @@ Get execution results for a completed job.
 }
 ```
 
-**Result Fields**:
+**Result fields**:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `exit_code` | number | Process exit code |
-| `stdout` | string | Standard output |
-| `stderr` | string | Standard error |
-
-**Behavior**:
-
-- Returns `200 OK` for any existing job
-- `result` may be `null` if job hasn't completed
-- Check `status` field to determine if execution finished
+| `exit_code` | integer | Process exit code from the sealed agent |
+| `stdout` | string | Captured standard output |
+| `stderr` | string | Captured standard error |
 
 **Errors**:
 
-| Status | Error |
-|--------|-------|
-| 404 | `job not found` |
+| HTTP Status | Condition | Response body |
+|-------------|-----------|---------------|
+| 404 | Job not found | `{"error": "job not found"}` |
 
 ---
 
 ### GET /health
 
-Health check endpoint.
+Server health check.
 
-**Response**:
+**Response** (200 OK):
 
 ```json
 {
@@ -232,86 +234,16 @@ Health check endpoint.
 }
 ```
 
-**Fields**:
-
 | Field | Type | Description |
 |-------|------|-------------|
-| `status` | string | Health status (`"ok"`) |
-| `jobs_count` | number | Number of tracked jobs |
+| `status` | string | Always `"ok"` when the server is running |
+| `jobs_count` | integer | Number of jobs currently tracked in memory |
 
-## NOT Implemented Endpoints
+---
 
-These endpoints do **NOT exist**:
+## Error response format
 
-| Endpoint | Status |
-|----------|--------|
-| `POST /compile` | ❌ Use `/api/v1/compile` |
-| `POST /sign` | ❌ Not an API endpoint (use CLI) |
-| `POST /launch` | ❌ Use `/api/v1/dispatch` |
-| `GET /status/\{id\}` | ❌ Use `/api/v1/jobs/\{job_id\}` |
-| `GET /logs/{id}` | ❌ Not implemented (no log streaming) |
-| Any `/api/v1/logs` | ❌ Not implemented |
-
-## Complete Workflow Example
-
-```bash
-# 1. Start the server
-seal server --bind 0.0.0.0:9090
-
-# 2. Compile an agent
-curl -X POST http://localhost:9090/api/v1/compile \
-  -H "Content-Type: application/json" \
-  -d '{
-    "project_dir": "./examples/demo_agent",
-    "user_fingerprint": "'"$(openssl rand -hex 32)"'",
-    "sandbox_fingerprint": "auto"
-  }'
-
-# Response: {"job_id": "uuid", "status": "pending"}
-
-# 3. Check compilation status
-curl http://localhost:9090/api/v1/jobs/\{job_id\}
-
-# Wait until status is "ready"
-
-# 4. Dispatch to sandbox
-curl -X POST http://localhost:9090/api/v1/dispatch \
-  -H "Content-Type: application/json" \
-  -d '{
-    "job_id": "\{job_id\}",
-    "sandbox": {
-      "image": "ubuntu:22.04",
-      "timeout_secs": 3600,
-      "memory_mb": 512
-    }
-  }'
-
-# Response: {"job_id": "uuid", "status": "dispatched"}
-
-# 5. Check execution status
-curl http://localhost:9090/api/v1/jobs/\{job_id\}
-
-# Wait until status is "completed" or "failed"
-
-# 6. Get results
-curl http://localhost:9090/api/v1/jobs/\{job_id\}/results
-```
-
-## Rate Limiting
-
-**Not implemented.** Implement at the gateway layer if needed.
-
-## CORS
-
-**Not configured.** Implement at the gateway layer if needed.
-
-## OpenAPI Specification
-
-**Not generated.** Use this document as the API reference.
-
-## Error Response Format
-
-All errors return JSON:
+All error responses use JSON:
 
 ```json
 {
@@ -319,21 +251,80 @@ All errors return JSON:
 }
 ```
 
-## Timeout Behavior
+---
 
-- **Compile timeout**: Backend-dependent (Nuitka/PyInstaller)
-- **Dispatch timeout**: Docker container timeout via `timeout_secs`
-- **API timeout**: No global timeout on API requests
+## Endpoints that do NOT exist
 
-## Security Considerations
+| Path | Note |
+|------|------|
+| `POST /compile` | Use `POST /api/v1/compile` |
+| `POST /sign` | Not an API endpoint; use the `seal sign` CLI command |
+| `POST /launch` | Use `POST /api/v1/dispatch` |
+| `GET /status/{id}` | Use `GET /api/v1/jobs/{job_id}` |
+| `GET /logs/{id}` | Not implemented; no log streaming endpoint exists |
+| Any `/api/v1/logs` | Not implemented |
 
-1. **No authentication** — Server **MUST** be deployed behind an authenticated gateway
-2. **Project path validation** — Only projects inside `compile_dir` allowed
-3. **Docker execution** — Runs with hardened flags but has network access
-4. **No TLS** — **MUST** use reverse proxy for HTTPS
-5. **No input sanitization** — **MUST** validate user-provided values at gateway layer
+---
+
+## Complete workflow example
+
+```bash
+# 1. Start the server
+seal server --bind 127.0.0.1:9090
+
+# 2. Compile an agent
+JOB=$(curl -s -X POST http://localhost:9090/api/v1/compile \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"project_dir\": \"./examples/demo_agent\",
+    \"user_fingerprint\": \"$(openssl rand -hex 32)\",
+    \"sandbox_fingerprint\": \"auto\"
+  }" | jq -r .job_id)
+
+# 3. Poll until status is "ready"
+curl -s http://localhost:9090/api/v1/jobs/$JOB | jq .status
+
+# 4. Dispatch to sandbox
+curl -s -X POST http://localhost:9090/api/v1/dispatch \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"job_id\": \"$JOB\",
+    \"sandbox\": {
+      \"image\": \"ubuntu:22.04\",
+      \"timeout_secs\": 3600,
+      \"memory_mb\": 512
+    }
+  }"
+
+# 5. Poll until status is "completed" or "failed"
+curl -s http://localhost:9090/api/v1/jobs/$JOB | jq .status
+
+# 6. Retrieve results
+curl -s http://localhost:9090/api/v1/jobs/$JOB/results | jq .
+```
+
+---
+
+## Operational notes
+
+- **Rate limiting**: Not implemented. Apply rate limiting at the gateway layer.
+- **CORS**: Not configured. Apply CORS headers at the gateway layer.
+- **TLS**: Not provided. Use a reverse proxy for HTTPS.
+- **Persistence**: Job state is held in memory only. All jobs are lost on server restart.
+- **OpenAPI specification**: Not generated. This document is the authoritative API reference.
+
+---
+
+## Security considerations
+
+1. **No authentication** — The server must be deployed behind an authenticated gateway.
+2. **Project path validation** — Only projects inside the configured `compile_dir` are accepted; requests with paths outside that boundary receive `400`.
+3. **Docker execution** — The sealed artifact runs inside a Docker container. The container has network access unless restricted externally.
+4. **No TLS** — Use a reverse proxy for HTTPS termination.
+
+---
 
 ## References
 
-- **REST API Design**: Fielding, R. (2000). "Architectural Styles and the Design of Network-based Software Architectures". Doctoral dissertation, University of California, Irvine.
-- **HTTP Semantics**: RFC 9110 (2022). HTTP Semantics.
+- **HTTP Semantics**: RFC 9110 (2022).
+- **REST**: Fielding, R. (2000). "Architectural Styles and the Design of Network-based Software Architectures". Doctoral dissertation, University of California, Irvine.

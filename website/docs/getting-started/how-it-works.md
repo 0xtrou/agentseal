@@ -10,184 +10,176 @@ This section describes the internal execution path of Snapfzz Seal from source c
 
 ```text
 project source
-  -> compiler backend selection
+  -> compile backend (nuitka / pyinstaller / go)
   -> compiled agent binary
-  -> key derivation
-  -> encrypted payload packing
-  -> launcher assembly and footer write
+  -> key derivation (HKDF-SHA256)
+  -> marker embedding (5 Shamir shares + tamper hash + white-box tables)
+  -> sentinel + encrypted payload assembly
+  -> footer write
   -> signature append
-  -> runtime verification and decryption
-  -> memfd execution
+  -> [runtime] signature verification
+  -> [runtime] Shamir secret reconstruction
+  -> [runtime] key derivation + integrity binding
+  -> [runtime] in-memory decryption (AES-256-GCM)
+  -> [runtime] memfd execution (Linux only)
 ```
 
 ## Detailed technical sequence
 
 ### 1. Compilation stage
 
-A compile backend is selected (`nuitka`, `pyinstaller`, or internal backend chain logic in compiler crate). The project is compiled into an executable payload candidate.
+`seal compile` selects a backend based on `--backend` (default: `nuitka`). The supported backends are:
+
+- **Nuitka** — Compiles a Python project to a standalone native binary.
+- **PyInstaller** — Packages a Python project to a self-contained executable.
+- **Go** — Builds a Go project with `go build`.
+
+The output of this stage is a compiled agent binary (ELF on Linux).
 
 ### 2. Key derivation stage
 
-An environment key is derived using HKDF-SHA256.
+An environment key is derived from the master secret and the two fingerprint inputs:
 
 ```text
-env_key = HKDF(master_secret, stable_fingerprint || user_fingerprint, "snapfzz-seal/env/v1")
+env_key = HKDF-SHA256(
+    IKM  = master_secret,
+    salt = stable_fingerprint_hash || user_fingerprint,
+    info = "snapfzz-seal/env/v1"
+)
 ```
 
-When session mode is enabled:
+Where:
+
+- `master_secret` — A freshly generated 256-bit random secret, unique per compile invocation.
+- `stable_fingerprint_hash` — SHA-256 of canonicalized host signals (machine ID, hostname, kernel release, etc.), or the explicit hex string passed via `--sandbox-fingerprint`.
+- `user_fingerprint` — The 64-hex-character value passed via `--user-fingerprint`.
+
+An integrity key is then derived by additionally binding the launcher binary content, so decryption requires an unmodified launcher:
 
 ```text
-session_key = HKDF(env_key, ephemeral_fingerprint, "snapfzz-seal/session/v1")
+integrity_key = HKDF-SHA256(env_key, SHA-256(launcher_bytes), "snapfzz-seal/integrity/v1")
 ```
 
-### 3. Payload packing stage
+### 3. Launcher embedding stage
 
-The payload packer creates:
+The `seal-launcher` binary is patched in memory with the following embedded values, in order:
 
-- Header (46 bytes)
-- Mode byte (1 byte)
-- Encrypted stream bytes (nonce plus chunk ciphertext)
+1. **Master secret via Shamir shares** — The master secret is split into 5 shares with a threshold of 3 using Shamir secret sharing over a prime field. Each share is written into a dedicated marker slot in the launcher binary. The markers are derived deterministically from `BUILD_ID`, so a mismatched `BUILD_ID` between the `seal` CLI and `seal-launcher` will produce markers that cannot be found.
+2. **Decoy secrets** — 50 decoy marker slots are embedded to complicate static analysis.
+3. **Tamper hash** — A SHA-256 hash of the launcher-with-shares is embedded into the launcher's tamper marker slot. The launcher checks this at runtime to detect modifications.
+4. **White-box tables** — Approximately 165 KB of lookup tables are embedded. These tables are generated from the master secret. The launcher currently uses standard AES-GCM decryption; white-box decryption integration is in progress.
 
-### 4. Assembly stage
+### 4. Payload encryption stage
 
-The launcher binary is read and patched with marker-based embed operations:
-
-- **Layer 1**: Marker generation from BUILD_ID (build time) ✅
-- **Layer 2**: Shamir secret share embedding (5 shares, 3 threshold) ✅
-- **Layer 3**: Decoy marker generation ⚠️ (generated, embedding in progress)
-- **Layer 5**: Launcher tamper hash replacement ✅
-- **Layer 6**: White-box table embedding (~165KB) ⚠️ (tables embedded, runtime integration in progress)
-
-The assembled binary is then written as:
+The compiled agent binary is encrypted using AES-256-GCM with the integrity key:
 
 ```text
-[launcher_with_embeds (including white-box tables)]
-[LAUNCHER_PAYLOAD_SENTINEL]
-[encrypted_payload]
-[payload_footer]
+encrypted_payload = AES-256-GCM(key=integrity_key, plaintext=agent_binary)
 ```
 
-White-box tables are embedded into the launcher binary before the payload sentinel.
+The payload is streamed in 64 KB chunks. Each chunk carries a 7-byte nonce and a 16-byte authentication tag.
 
-### 5. Signing stage
+### 5. Assembly stage
 
-`seal sign` appends the signature block to the assembled output.
+The final artifact is structured as:
 
-### 6. Launch stage
+```text
+[launcher_binary_with_embedded_shares_and_tables]
+[PAYLOAD_SENTINEL  (32 bytes, BUILD_ID-derived)]
+[encrypted_payload (header + encrypted chunks)]
+[payload_footer    (64 bytes: original_hash + launcher_hash + backend_type)]
+```
 
-`seal launch` or launcher runtime performs:
+### 6. Signing stage
 
-1. Payload header validation
-2. Signature verification
-3. **Layer 4**: Anti-analysis checks (debugger, VM detection) ✅
-4. **Layer 5**: Launcher integrity check against footer hash ✅
-5. Runtime fingerprint collection
-6. **Layer 2**: Shamir secret reconstruction (from 3+ shares) ✅
-7. Key derivation with integrity binding ✅
-8. In-memory decrypt (currently AES-GCM; white-box integration in progress)
-9. `memfd` execution path
+`seal sign` reads the assembled artifact, computes an Ed25519 signature over the entire binary content, and appends a 100-byte block:
 
-**Note on Layer 6**: White-box tables are generated and embedded during compilation, but the launcher currently uses standard AES-GCM decryption. Full white-box decryption integration is in progress.
+```text
+[artifact bytes]
+[ASL\x02 magic   (4 bytes)]
+[Ed25519 signature (64 bytes)]
+[embedded public key (32 bytes)]
+```
+
+The signing key (`--key`) is a hex-encoded 32-byte Ed25519 private key. The corresponding public key is read from the same directory automatically.
+
+### 7. Launch stage (Linux only)
+
+`seal launch` performs the following steps on Linux:
+
+1. **Reads the artifact** from the path given by `--payload`.
+2. **Validates the signature block** — checks for the `ASL\x02` magic and verifies the Ed25519 signature. Execution is aborted if the signature is invalid or absent.
+3. **Anti-analysis checks** — detects debugger attachment via ptrace and `TracerPid`, VM indicators (VMware, VirtualBox, QEMU strings), and timing anomalies.
+4. **Launcher integrity check** — verifies the launcher binary hash against the value stored in the payload footer.
+5. **Shamir secret reconstruction** — locates 3 or more of the 5 embedded share slots and reconstructs the master secret.
+6. **Key derivation** — re-derives `env_key` and `integrity_key` using the runtime fingerprints.
+7. **In-memory decryption** — decrypts the payload using AES-256-GCM. The decrypted bytes are never written to disk.
+8. **`memfd` execution** — writes the decrypted binary to an anonymous `memfd_create` file, seals it, and calls `fexecve` to execute it as a child process.
 
 ## Cryptographic primitives
 
-- **AES-256-GCM** for authenticated encryption
-- **HKDF-SHA256** for key derivation
-- **SHA-256** for integrity hashes
-- **Ed25519** for artifact signatures
-- **HMAC-SHA256** for header authentication field
+| Primitive | Use |
+|-----------|-----|
+| AES-256-GCM | Authenticated payload encryption/decryption |
+| HKDF-SHA256 | Key derivation from master secret and fingerprints |
+| SHA-256 | Binary integrity hashes; marker derivation |
+| Ed25519 | Artifact signing and verification |
+| HMAC-SHA256 | Header authentication field |
+| Shamir secret sharing | Master secret split across 5 shares (3-of-5 threshold) |
 
 ## Memory layout during runtime
-
-The launcher keeps critical material in process memory only for the shortest practical interval.
 
 ```text
 +-----------------------------------------------------------+
 | launcher process                                           |
 |                                                           |
-| payload bytes -> verify -> derive keys -> decrypt buffer  |
-|                                  |                        |
-|                                  v                        |
-|                           memfd write and seal            |
-|                                  |                        |
-|                                  v                        |
-|                             fexecve child                 |
+| read artifact -> verify signature -> integrity check      |
+|                        |                                  |
+|                        v                                  |
+|              reconstruct master_secret                    |
+|              (3 of 5 Shamir shares)                       |
+|                        |                                  |
+|                        v                                  |
+|              derive env_key + integrity_key               |
+|                        |                                  |
+|                        v                                  |
+|              AES-256-GCM decrypt (in-memory buffer)       |
+|                        |                                  |
+|                        v                                  |
+|              memfd_create + write + fexecve               |
 +-----------------------------------------------------------+
 ```
 
-Operational notes:
+Key material is zeroized after use where implemented. The decrypted payload bytes exist in process memory only for the interval between decryption and `fexecve`.
 
-- Decryption key buffers are zeroized after use where implemented.
-- Output collection is bounded by configurable limits in executor logic.
+## BUILD_ID requirement
+
+All cryptographic markers — the Shamir share slot positions, the payload sentinel, the tamper marker slot, the white-box table slot, and the decoy marker positions — are derived from the `BUILD_ID` environment variable at compile time via SHA-256:
+
+```text
+marker_bytes = SHA-256(BUILD_ID || label || "deterministic_marker_v1")
+```
+
+If `BUILD_ID` is not set, it defaults to `"dev"`. The `seal` CLI and `seal-launcher` must be built with the same `BUILD_ID`. A mismatch will cause marker lookup to fail during assembly or during runtime secret reconstruction.
 
 ## Security considerations
 
 - Signature validation occurs before decryption and execution.
-- Integrity checks are tied to launcher hash stored in payload footer.
-- Linux seccomp policy is applied in supported execution paths.
-
-## Security Architecture
-
-Snapfzz Seal implements defense-in-depth security with multiple protection layers:
-
-### Layer Breakdown
-
-**Layer 1: Deterministic Markers ✅**
-- Markers derived from BUILD_ID at compile time
-- 5 real markers + 50 decoy markers
-- Not truly random, but opaque
-
-**Layer 2: Shamir Secret Sharing ✅**
-- Master secret split into 5 shares
-- Requires minimum 3 shares to reconstruct
-- Prime field arithmetic (secp256k1 modulus)
-
-**Layer 3: Decoy Markers ⚠️**
-- 10 decoy marker sets generated
-- Position obfuscation with salt
-- **Status**: Generated during compile, embedding in progress
-
-**Layer 4: Anti-Analysis ✅**
-- Debugger detection (ptrace, TracerPid)
-- VM detection (VMware, VirtualBox, QEMU)
-- Timing checks and environment poisoning
-
-**Layer 5: Integrity Binding**
-- Decryption key depends on binary hash
-- ELF parsing for code/data sections
-- Detects binary modifications
-
-**Layer 6: White-Box Cryptography**
-- Key spread across ~165KB of lookup tables
-- T-boxes + Type I/II mixing tables
-- No single table reveals the key
-
-### Security Impact
-
-| Metric | Before | After |
-|--------|--------|-------|
-| Extraction difficulty | Trivial | Expert-level |
-| Required skill | Basic CLI usage | Expert cryptanalyst |
-| Tools needed | Standard utilities | Custom reverse engineering |
+- Integrity checks bind the decryption key to the launcher binary hash. Any modification to the launcher invalidates the decryption key.
+- Linux seccomp-bpf filtering is applied after execution begins (best-effort; a failure to install the filter is logged and execution continues).
+- The white-box table embedding is implemented; full white-box decryption at runtime is in progress. Currently, standard AES-GCM decryption is used.
 
 ## Limitations
 
-- Complete resistance to runtime memory inspection is not provided.
-- Platform behavior differs, especially outside Linux.
-- Security properties depend on trustworthy host kernel and userspace boundary.
+- Complete resistance to runtime memory inspection is not provided. A privileged process can read decrypted payload bytes from process memory.
+- Platform behavior differs significantly outside Linux. All runtime hardening features are Linux-specific.
+- Security properties depend on a trustworthy host kernel and userspace boundary.
+- White-box decryption integration is in progress. The launcher currently performs standard AES-GCM decryption.
 
 ## References
 
-### Cryptographic Foundations
-
 - **AES-GCM**: Dworkin, M. (2007). NIST SP 800-38D. Galois/Counter Mode specification.
-
 - **HKDF**: Krawczyk, H. (2010). RFC 5869. HMAC-based Extract-and-Expand Key Derivation Function.
-
-- **Shamir Secret Sharing**: Shamir, A. (1979). "How to Share a Secret". CACM 22(11):612-613.
-
+- **Shamir Secret Sharing**: Shamir, A. (1979). "How to Share a Secret". CACM 22(11):612–613.
 - **White-Box Cryptography**: Chow, S. et al. (2002). "White-Box Cryptography and an AES Implementation". SAC 2002, LNCS 2595.
-
-### Security Engineering
-
 - **Defense-in-Depth**: Saltzer & Schroeder (1975). "The Protection of Information in Computer Systems". Proc. IEEE 63(9).

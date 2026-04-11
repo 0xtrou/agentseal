@@ -1,64 +1,82 @@
+---
+title: Security Audits
+sidebar_position: 2
+---
+
 # Security Audits
 
-This document summarizes recorded audit activities and tracked remediation state.
+This page documents the security review status of Snapfzz Seal. It is written to be accurate rather than reassuring: where formal work has not been conducted, that is stated plainly.
 
-## Audit history summary
+---
 
-| Audit stream | Findings | Current status |
-|---|---:|---|
-| Initial security review | 15 | Resolved |
-| Revised security review | 8 | Resolved |
-| Architectural review | 7 | Resolved |
-| Claims and implementation consistency review | 12 | Resolved |
+## Current Status
 
-Total findings tracked in project history: **42**.
+**No formal third-party security audit has been conducted on Snapfzz Seal.**
 
-## Findings and resolutions
+The project has not been reviewed by an independent security firm, has not been submitted to a public bug-bounty programme, and has not undergone a structured penetration test by a party external to its development. Any prior page content suggesting otherwise was inaccurate and has been corrected here.
 
-The following categories were addressed during remediation cycles:
+---
 
-- Signature enforcement behavior in launch path
-- Tamper detection correctness and hash handling
-- Sandbox hardening profile adjustments
-- Documentation of secret extraction limitations
+## Internal Review Activity
 
-Representative remediation references mentioned in prior project records:
+The codebase has undergone iterative internal review during development. This includes:
 
-- `977a6dc` for mandatory signature enforcement and seccomp profile adjustment
-- `d7c118a` for tamper detection correction
-- `0af048f` for security documentation updates regarding secret exposure limits
+- Code review of cryptographic paths (key derivation, Shamir splitting and reconstruction, AES-256-GCM usage, Ed25519 signing and verification) by the project authors.
+- Identification and correction of implementation defects in signature enforcement, tamper detection, and seccomp profile construction, tracked via commits in the project repository.
+- Documentation review to align stated security properties with actual implementation behaviour, resulting in corrections to the threat model.
 
-## Audit process expectations
+Internal review is a necessary but not sufficient basis for security assurance. It does not substitute for independent analysis.
 
-A typical audit pass in this project should include:
+---
 
-1. Source review of cryptographic and launch-critical paths.
-2. Validation of signature and integrity failure behavior.
-3. Verification of threat-model alignment with implementation.
-4. Regression checks for previously fixed findings.
+## Known Implementation Corrections
 
-## Practical verification examples
+The following categories of issues have been identified and addressed during internal development cycles. These are shared for transparency; they do not constitute a formal findings register.
 
-```bash
-# signature verification baseline
-seal verify --binary ./agent.sealed --pubkey ~/.snapfzz-seal/keys/builder_public.key
+- **Signature enforcement:** Early launcher versions did not unconditionally enforce signature verification on all execution paths. This was corrected to require valid signature before payload execution.
+- **Tamper detection hash handling:** The integrity hash computation incorrectly included or excluded regions in some cases, causing false positives or gaps in tamper detection coverage. Corrected in the ELF region parser.
+- **Seccomp profile scope:** The initial seccomp allowlist was insufficient for certain payload runtimes (Python/PyInstaller onefile extraction, Go runtime startup, subprocess network operations), causing launcher failures. Extended iteratively to cover observed requirements.
+- **Documentation accuracy:** Prior security documentation overstated the anti-debug capability (claiming VM detection, timing checks, and breakpoint scanning that were not implemented) and overstated the decoy mechanism (describing 55 active extraction barriers that do not exist in the current runtime path). These claims have been removed.
 
-# launch failure path check with wrong fingerprint
-seal launch --payload ./agent.sealed --user-fingerprint <mismatched-fingerprint>
-```
+---
 
-Expected behavior:
+## What a Future Audit Should Cover
 
-- Invalid signature artifacts are rejected.
-- Fingerprint mismatch prevents successful decryption.
+A thorough independent security audit of Snapfzz Seal should include at minimum:
 
-## Security considerations
+**Cryptographic correctness**
+- Shamir secret sharing implementation over the secp256k1 prime field: field arithmetic, polynomial evaluation, Lagrange interpolation, randomness quality of coefficients.
+- AES-256-GCM key derivation chain: HKDF usage, nonce generation, tag verification behaviour on failure.
+- Ed25519 signature generation and verification: key serialisation, canonicalisation, and rejection of malformed inputs.
+- Integrity binding: correctness of ELF segment parsing, exclusion region logic, and hash-to-key derivation.
 
-- Audit evidence should be retained with immutable artifact hashes.
-- Findings should map to commit references and reproducible test cases.
-- Remediation should include both code change and documentation update when behavior changes.
+**Implementation and integration**
+- Marker search and share embedding in `embed.rs`: correct identification of real marker slots, absence of off-by-one errors, behaviour when markers are absent or duplicated.
+- Launcher execution path: ordering of security setup (seccomp, anti-debug, signature verification, key derivation) and failure handling at each stage.
+- Fallback behaviour: conditions under which the environment-variable secret fallback is triggered, and whether that fallback can be forced by an attacker.
+- `seal verify` exit code semantics: whether output parsing is necessary for correct CI integration.
 
-## Limitations
+**Platform coverage and limits**
+- Non-Linux paths: confirm that integrity binding, seccomp, and anti-debug no-ops do not introduce unexpected trust assumptions.
+- Temporary file execution fallback on non-Linux: assess plaintext exposure window.
 
-- This page summarizes repository-tracked findings and does not constitute third-party certification.
-- Public details may omit sensitive exploit reproduction information by design.
+**Operational security**
+- Key generation and storage recommendations: adequacy of current documentation for production deployments.
+- Signing key pinning gap: risk characterisation and recommended mitigations for the self-validating signature model.
+
+---
+
+## Reporting Security Issues
+
+If you identify a security vulnerability in Snapfzz Seal, please report it through the project's private disclosure channel rather than filing a public issue. Contact details are available in the project repository's `SECURITY.md` file.
+
+---
+
+## Audit Hygiene Expectations
+
+If a formal audit is commissioned in the future, the following practices should be observed:
+
+- All findings should be recorded against specific commit hashes and reproducible test cases.
+- Remediation should address both code and documentation when a security property changes.
+- Audit evidence (reports, finding trackers, remediation commits) should be retained with immutable artifact hashes for traceability.
+- A public summary of findings and their resolution status should be published after remediation, consistent with responsible disclosure norms.

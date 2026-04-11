@@ -1,351 +1,193 @@
+---
+title: Threat Model
+sidebar_position: 1
+---
+
 # Threat Model
 
-This document defines the explicit adversary model and security boundaries for Snapfzz Seal.
+This document defines the adversary model, protected assets, implemented mitigations, and known security boundaries for Snapfzz Seal. It is written in an academic security-analysis style and attempts to be precise about what the system does and does not provide. Claims are grounded in the current implementation; speculative or aspirational protections are explicitly labelled as such.
 
-## Security objectives
+---
 
-The system is designed to:
+## 1. Assets Under Protection
 
-1. Increase effort required to extract sensitive payload data from distributed artifacts.
-2. Bind decryption to environment-derived inputs.
-3. Enforce signature validation before execution.
-4. Reduce plaintext disk artifacts during launch.
-5. **Protect master secrets with defense-in-depth security layers.**
+| Asset | Description |
+|-------|-------------|
+| **Agent payload** | The encrypted binary or archive attached to a sealed artifact. Confidentiality depends on key material not being recovered by an unauthorized party. |
+| **Master secret** | A 32-byte value split into Shamir shares and embedded in the launcher at compile time. It is the root of the decryption key derivation chain. |
+| **Sealed artifact binary** | The self-contained launcher + payload file distributed to execution environments. Integrity of this file is attested by an Ed25519 signature. |
+| **Signing private key** | The Ed25519 private key used to sign artifacts at build time. Compromise of this key breaks authenticity for all artifacts signed with it. |
 
-## Defense-in-Depth Security
+---
 
-Snapfzz Seal implements multiple security layers to protect master secrets:
+## 2. Adversary Model
 
-### Layer 1: Deterministic Markers ✅
-- Markers derived from BUILD_ID at compile time
-- 5 real markers + 50 decoy markers per binary
-- **Note**: Not truly random; derived deterministically from build inputs
+### 2.1 In-Scope Adversaries
 
-### Layer 2: Shamir Secret Sharing ✅
-- Master secret split into 5 shares
-- Requires minimum 3 shares to reconstruct
-- Prime field arithmetic (secp256k1 modulus)
-- **Status**: Fully implemented and integrated
+- **Passive artifact readers.** Operators, storage systems, or interceptors with read access to sealed artifact files on disk. Goal: extract payload plaintext or recover the master secret.
+- **Replay attackers.** Parties attempting to execute a sealed artifact in an environment for which it was not compiled (mismatched fingerprint components).
+- **Tamper attackers.** Parties attempting to modify artifact content in transit or at rest and have the modification accepted by the launcher.
+- **Static analysts.** Parties performing binary inspection (disassembly, string search, section parsing) without elevated runtime privileges on the execution host.
+- **Basic dynamic analysts (Linux).** Parties attempting to attach a debugger or inspect process memory at the user-privilege level.
 
-### Layer 3: Decoy Markers ⚠️
-- 10 decoy marker sets generated
-- Position obfuscation with salt
-- **Status**: Markers generated, but not yet embedded as full fake share sets in runtime path
-- **Current limitation**: Does not currently create 55 active extraction barriers
+### 2.2 Out-of-Scope Adversaries
 
-### Layer 4: Anti-Analysis ✅
-- Debugger detection (ptrace, TracerPid, breakpoints)
-- VM detection (VMware, VirtualBox, QEMU, Xen)
-- Timing checks and environment poisoning
-- **Status**: Fully implemented
+The following adversary classes are explicitly outside the security boundary of Snapfzz Seal:
 
-### Layer 5: Integrity Binding ✅
-- Decryption key depends on binary hash
-- ELF parsing for code/data sections
-- Exclusion of secret regions from hash
-- **Status**: Implemented on Linux; skipped on non-Linux platforms
+- **Adversaries with root or kernel-level access to the execution host.** Such adversaries can read decrypted payload from memory, inject code, bypass seccomp via kernel modules, and disable all user-space protections.
+- **Adversaries with physical or hardware-level access.** No TPM, secure enclave (SGX/TrustZone), or side-channel countermeasure beyond basic implementation hygiene is present.
+- **Nation-state-grade reverse engineers.** The system is not designed to withstand sustained expert cryptanalysis or automated binary analysis tooling of that calibre.
 
-### Layer 6: White-Box Cryptography ⚠️
-- ~165KB of lookup tables generated and embedded
-- T-boxes + Type I/II mixing tables
-- **Status**: Tables implemented and embedded; runtime decryption integration in progress
-- **Current limitation**: Launcher uses standard AES-GCM, not white-box tables
+---
 
-**Security Impact:**
-- Before: Master secret trivially extractable
-- After: Significantly increased extraction effort for Layers 1, 2, 4, 5
-- Layers 3, 6: Implementation complete, runtime integration in progress
+## 3. Implemented Mitigations
 
-## Adversary model
+### 3.1 Shamir Secret Sharing (5-of-3 threshold)
 
-### In-scope adversaries
+The master secret is split into five shares at compile time using a (3, 5) Shamir threshold scheme implemented over the secp256k1 prime field (`p = 2²⁵⁶ − 2³² − 977`). Polynomial coefficients are drawn from a cryptographically random source. Each share is embedded in the launcher binary in a dedicated slot located by a compile-time marker.
 
-- Operators with read access to artifact files.
-- Attackers attempting replay across unintended environments.
-- Attackers attempting artifact tampering in transit or at rest.
-- Analysts performing static inspection without full host privilege.
+**What this provides:** An attacker who recovers fewer than three share slots from static analysis cannot reconstruct the secret.
 
-### Out-of-scope adversaries
+**What this does not provide:** If the binary is fully readable, all five slots are available; an attacker who can read the binary can read all five shares. The scheme offers obfuscation overhead, not information-theoretic secrecy.
 
-- Attackers with persistent root control of execution host.
-- Attackers with kernel-level instrumentation and memory extraction capability.
-- Physical adversaries with hardware-level invasive access.
+### 3.2 Binary Integrity Binding (Linux only)
 
-## Security guarantees
+At launch, the master secret is not used directly. Instead, a derived key is computed as `SHA-256(secret || SHA-256(ELF_code_and_data))`, where the hash covers the executable and data PT\_LOAD segments of the launcher ELF, with the share slots, tamper marker region, and payload sentinel excluded from the digest. This means modifying the launcher binary — even outside the secret regions — invalidates the key and decryption fails.
 
-### Integrity
+**What this provides:** Resistance to binary patching attacks that attempt to bypass runtime checks by modifying launcher code outside the embedded secret regions.
 
-- Signature verification is required by launcher path for accepted payload execution.
-- Payload header integrity is protected via HMAC over core metadata.
-- Launcher hash in footer is checked for tamper evidence in Linux path.
+**What this does not provide:** On non-Linux platforms, the integrity binding is a no-op; the derived key is `SHA-256(secret || secret)`, which is a deterministic function of the secret alone. The protection does not apply on macOS or Windows.
 
-:::warning Signature Trust Model
+### 3.3 Ed25519 Signature Chain
 
-**Critical limitation**: The launcher verifies signatures using the **public key embedded in the artifact itself**, not a separately-trusted key store.
+Each artifact carries an Ed25519 signature over its payload and metadata. The launcher verifies this signature before executing the payload. Unsigned artifacts or artifacts with invalid signatures are rejected.
 
-This means:
-- ✅ Detects **unsigned** modifications (tampering without re-signing)
-- ✅ Detects accidental corruption
-- ❌ Does **NOT** verify the signer's identity
-- ❌ An attacker who can replace the artifact can also **re-sign it with their own key**
+**Critical limitation — self-validating signatures:** The public key used for verification is embedded in the artifact itself. The launcher verifies that the signature is consistent with the embedded key, not that the key belongs to a trusted party. An attacker who can replace the artifact can re-sign it with their own key and embed a matching public key; the launcher will accept it. This is integrity verification, not authenticity verification.
 
-**Attack scenario**:
-1. Attacker obtains sealed artifact
-2. Attacker modifies payload content
-3. Attacker signs with their own Ed25519 key
-4. Attacker embeds matching public key
-5. Launcher verification **PASSES**
+For authenticity guarantees, operators must implement external key pinning — verifying the embedded public key against a known-good key obtained out-of-band.
 
-This is **integrity verification, not authenticity verification**. For production use, you must:
-- Implement external key pinning
-- Use a trusted key distribution mechanism
-- Verify against a known-good public key out-of-band
+### 3.4 Fingerprint Binding
 
-:::
+Decryption keys are derived in part from environment-supplied fingerprint components (host identifiers, user-supplied tokens, or combinations thereof). A payload sealed for one environment will not decrypt correctly in a different environment unless the fingerprint components match.
 
-### Confidentiality
+**What this provides:** Prevents trivially copying and running a sealed artifact on an arbitrary machine.
 
-- Payload confidentiality relies on AES-256-GCM with derived keys.
-- Decryption keys are bound to supplied fingerprint components.
-- **Master secret protected by 6-layer defense-in-depth security.**
+**What this does not provide:** Fingerprint components are software-derived and can be spoofed by a privileged attacker who controls the execution environment. The system does not use hardware attestation or remote attestation.
 
-:::caution[Master Secret Protection]
+### 3.5 Memory-Only Payload Execution (Linux only)
 
-The master secret is protected by **white-box cryptography and 6 security layers**:
+On Linux, the decrypted payload is written to an anonymous `memfd_create` file descriptor and executed via `execveat`, avoiding writing plaintext payload bytes to the filesystem. On non-Linux platforms, a temporary file path is used as a fallback, which does leave a transient plaintext artifact on disk.
 
-**What this means:**
-- ✅ Master secret is **NOT** stored in plaintext
-- ✅ Key is embedded in mathematical structure of lookup tables
-- ✅ Extracting key requires reverse-engineering entire table structure
-- ✅ Attacker cost: Expert-level cryptanalysis required
+### 3.6 Seccomp Syscall Allowlist (Linux x86_64 only)
 
-**Attack scenarios prevented:**
-- ❌ Simple grep + dd extraction (Layer 1: random markers)
-- ❌ Direct share extraction (Layer 2: Shamir + Layer 3: decoys)
-- ❌ Dynamic analysis (Layer 4: anti-debug/anti-VM)
-- ❌ Binary modification (Layer 5: integrity binding)
-- ❌ Key extraction from tables (Layer 6: white-box cryptography)
+After launch setup, a BPF seccomp filter is applied that restricts the process to an explicit allowlist of syscalls required for normal operation. Denied syscalls return `EPERM` rather than killing the process. The filter is applied on a best-effort basis: if `seccompiler::apply_filter` fails, the failure is logged but execution continues. The filter is a no-op on non-Linux platforms.
 
-**Remaining considerations:**
-- Hardware-based attacks (out of scope)
-- Side-channel attacks (mitigated but not eliminated)
-- Long-term cryptanalysis (requires sustained expert effort)
+**Scope of the allowlist:** The current allowlist is intentionally broad to accommodate diverse payload runtimes (Python/PyInstaller, Go, network-capable agents). It includes `execve`, `execveat`, `clone`, `clone3`, `socket`, `connect`, `bind`, `listen`, `open`, `unlink`, and similar syscalls. The allowlist reduces attack surface for payloads that attempt to invoke unusual or dangerous syscalls, but it is not a tight sandbox.
 
-:::
+**No argument-level filtering:** The current filter does not apply argument constraints to any syscall. For example, `socket` is permitted regardless of address family.
 
-### Execution controls
+### 3.7 Anti-Debug Protections (Linux only)
 
-- Linux runtime path applies process protection hooks and seccomp filtering (**best-effort**, may fail silently).
-- Decrypted payload bytes are executed from memory-backed file descriptors.
+Two anti-debug mechanisms are applied on Linux:
 
-**Platform limitations**:
-- ✅ Linux x86_64: Full execution controls
-- ❌ macOS: No memfd execution, no seccomp
-- ❌ Windows: No execution support at all
+1. `prctl(PR_SET_DUMPABLE, 0)` — disables core dumps and restricts `/proc/[pid]/mem` access from unprivileged processes.
+2. `ptrace(PTRACE_TRACEME)` — occupies the ptrace slot, preventing a second tracer from attaching (a standard self-ptrace trick).
 
-## Attack surface analysis
+Both are applied on a best-effort basis; failures are logged as warnings and do not abort execution.
 
-### Build and sign phase
+**What is not implemented:** The previous documentation claimed VM detection (VMware, VirtualBox, QEMU, Xen), timing-based debugger detection, breakpoint scanning, and environment poisoning. None of these techniques are present in the current codebase. The implemented protections raise the bar modestly against casual user-level debugger attachment on Linux.
 
-- Signing key storage and CI runner trust
-- Compiler backend supply chain dependencies
-- Artifact handling and publication channels
+### 3.8 Decoy Position Hints
 
-**Key considerations**:
-- Signing key compromise allows attacker to sign malicious artifacts
-- No key rotation mechanism built into system
-- Key distribution security is operator's responsibility
+The compiler embeds a position-hint obfuscation value to obscure the index of the real share set among potential decoy locations. Ten decoy secret values are generated deterministically from a compile-time salt. However, these decoy values are not currently embedded as fake marker-and-share structures in the binary. The decoy mechanism provides position-hint obfuscation only; it does not create additional extraction barriers equivalent in form to the real shares.
 
-### Distribution phase
+---
 
-- Artifact interception and replacement
-- Public key distribution integrity
+## 4. Known Gaps and Honest Limitations
 
-:::warning[Identity Verification Gap]
+### 4.1 Master Secret Is In Memory During Execution
 
-Since signatures use embedded public keys, distribution-phase attacks can succeed if:
+The master secret is reconstructed in process memory at launch time and remains there for the duration of key derivation. Any privileged process that can read memory (e.g., via `/proc/[pid]/mem` with sufficient privilege, or via a debugger attached with root) can recover the secret. There is no secure enclave, encrypted memory region, or key isolation mechanism.
 
-1. Attacker intercepts artifact in transit
-2. Attacker modifies and re-signs with own key
-3. Recipient has no external way to verify signer identity
+### 4.2 No Key Rotation Mechanism
 
-**Mitigation**: Use authenticated artifact repositories, signed commit chains, or out-of-band key verification.
+There is no built-in mechanism for rotating the master secret or the signing key without recompiling and redistributing all affected artifacts. Key compromise requires manual intervention and full artifact replacement.
 
-:::
+### 4.3 Fallback to Environment Variable
 
-### Launch phase
+If Shamir share reconstruction fails (e.g., markers not found or shares corrupted), the launcher falls back to reading a secret from an environment variable. This fallback reduces the effective protection of the Shamir scheme in environments where the fallback variable is set or where an attacker can control the environment.
 
-:::warning[`seal verify` Exit Code]
+### 4.4 Integrity Binding Is Linux-Only
 
-The `seal verify` command returns exit code `0` even for `INVALID` or `WARNING: unsigned` results.
+On macOS and Windows, the key derivation function does not incorporate any measurement of the binary. Binary patching on these platforms has no effect on decryption key derivation.
 
-**Implication**:
-- CI/CD pipelines relying solely on exit code will pass incorrectly
-- Must parse output text or use `--pubkey` for pinned key verification
+### 4.5 Signature Does Not Verify Signer Identity
 
-**Best practice**:
-```bash
-seal verify --binary ./artifact.sealed --pubkey trusted.key
-# Check output for "VALID (pinned to explicit public key)"
-```
+As noted in §3.3, the embedded public key can be replaced by an attacker who controls the artifact. Without an external trust anchor, the signature provides tamper evidence only — it does not authenticate the source of the artifact.
 
-:::
+### 4.6 Seccomp Is Best-Effort and Broad
 
-### Launch phase
+Application of the seccomp filter is non-fatal on failure. The allowlist is broad enough to not meaningfully restrict most payload workloads, limiting its value as a containment mechanism for malicious payloads.
 
-- Input parameter manipulation (`--user-fingerprint`, environment secret values)
-- Runtime host drift affecting fingerprint matching
-- Memory and process introspection by privileged local actors
+### 4.7 No Hardware Attestation
 
-**Anti-debugging reality**:
-- Multi-layer protections implemented (ptrace, TracerPid, timing checks, breakpoint scanning)
-- Sophisticated adversaries with elevated privileges can bypass
-- Protections raise attacker cost but do not guarantee prevention
+The system does not integrate with TPM, Intel SGX, AMD SEV, or any hardware-backed attestation mechanism. All protections are software-only and can be bypassed by an attacker with sufficient host privilege.
 
-**Seccomp reality**:
-- Applied on best-effort basis
-- Application failure is logged but not fatal
-- May not be enforced on all platforms
+### 4.8 `seal verify` Exit Code Behaviour
 
-### Server API phase
+The `seal verify` command currently returns exit code `0` even when verification yields an `INVALID` or unsigned-artifact result. CI/CD pipelines that rely solely on exit code for pass/fail decisions will behave incorrectly. Output text must be parsed, or the `--pubkey` flag used with external key pinning, to obtain a reliable signal.
 
-- API misuse if exposed without authentication
-- Sandbox backend command execution pathways
-- Artifact retrieval and job state manipulation
+---
 
-**No built-in auth/authz**:
-- Server has no JWT, API keys, or RBAC
-- Must be deployed behind authenticated gateway
-- Rate limiting not implemented
+## 5. Attack Surface Summary
 
-:::danger No Transport Security
+| Phase | Attack Vector | Mitigation | Residual Risk |
+|-------|--------------|-----------|--------------|
+| Build | Signing key compromise | External key custody (operator responsibility) | Full artifact forgery |
+| Build | Compiler supply chain | Standard dependency auditing | Malicious share embedding |
+| Distribution | Artifact MITM / replacement | External key pinning, authenticated repos | Re-signing attack succeeds without pinning |
+| Launch (Linux) | Static share extraction | Shamir (3-of-5) + integrity binding | All shares readable from disk; binding is key-derivation only |
+| Launch (Linux) | Debugger attachment | `PR_SET_DUMPABLE` + `PTRACE_TRACEME` | Bypassable with root |
+| Launch (Linux) | Dangerous syscall invocation | Seccomp allowlist (best-effort, broad) | Non-fatal on failure; no argument filtering |
+| Launch (non-Linux) | All of the above | None beyond encryption | No runtime protections apply |
+| Runtime (any) | Memory extraction | Memory-only execution on Linux | Root can read process memory |
+| Runtime (any) | Fingerprint spoofing | Fingerprint binding | Spoofable by privileged attacker |
 
-The built-in server has **no TLS/mTLS implementation**. It binds and serves plain HTTP.
+---
 
-**Required for production**:
-- Deploy behind TLS-terminating reverse proxy
-- Use authenticated API gateway
-- Never expose server directly to untrusted networks
+## 6. Recommended Controls Beyond Snapfzz Seal
 
-:::
+The following controls are necessary in production deployments and are outside Snapfzz Seal's security boundary:
 
-## Known limitations
+**Critical**
+- HSM or managed KMS for signing key custody.
+- Authenticated artifact distribution channel (signed repository, content-addressable store with verification).
+- Out-of-band public key pinning to provide authenticity verification.
 
-### Technical Limitations
+**Important**
+- Host hardening and least-privilege service accounts for the execution environment.
+- Network segmentation to limit blast radius of payload compromise.
+- Monitoring of verification failures and anomalous launch patterns.
 
-1. **Master secret in binary** — Necessary for self-contained execution but extractable by determined adversaries.
+**Recommended**
+- Short artifact lifetimes to limit exposure window after key compromise.
+- Audit logging of compilation and execution events.
+- Documented incident response procedure for signing key compromise.
 
-2. **Signature is self-validating** — Verifies integrity, not identity. Attacker can re-sign modified artifacts.
+---
 
-3. **Seccomp is best-effort** — Application failures are non-fatal; protection may be absent.
-
-4. **Non-Linux launcher integrity check** — Footer hash verification skipped on macOS/Windows; only warning logged.
-
-5. **No cross-platform execution** — Only Linux x86_64 can actually launch sealed agents.
-
-5. **Fingerprinting is software-based** — Not remote attestation; spoofable by privileged attackers.
-
-6. **`auto` fingerprint mode** — Convenience feature, not high-assurance binding.
-
-### Operational Limitations
-
-1. **No key rotation** — Manual re-compilation required for key changes.
-
-2. **No built-in auth** — Server API requires external authentication layer.
-
-3. **No log streaming** — Logs captured post-execution only.
-
-4. **No hardware attestation** — No TPM/SGX integration.
-
-### Deployment Responsibilities
-
-The following are **outside** Snapfzz Seal's security boundary:
-
-- Signing key custody and rotation
-- Master secret distribution
-- Server authentication and authorization
-- Network segmentation
-- Host hardening
-- Monitoring and alerting
-
-## What Snapfzz Seal Protects Against
-
-✅ **Casual extraction attempts** — Encrypted payload prevents trivial extraction from disk
-
-✅ **Unauthorized execution** — Fingerprint binding prevents execution on mismatched environments
-
-✅ **Accidental corruption** — Signature verification detects bit flips and truncation
-
-✅ **Supply chain tampering** (with proper key management) — Detects modified artifacts
-
-✅ **Simple dynamic analysis** — Memory-only execution, ptrace protections raise bar
-
-## What Snapfzz Seal Does NOT Protect Against
-
-❌ **Privileged adversaries** — Root can extract secrets from memory
-
-❌ **Re-signing attacks** — Attacker with own signing key can create valid artifacts
-
-❌ **Nation-state attacks** — Not designed for adversary model
-
-❌ **Memory dumping** — Privileged processes can read decrypted payload
-
-❌ **Runtime introspection** — Root can attach debuggers
-
-❌ **Hardware attacks** — No TPM/SGX protection
-
-❌ **Fingerprint spoofing** — Privileged attacker can fake environment signals
-
-## Recommended controls beyond Snapfzz Seal
-
-### Critical
-
-- **Key custody through HSM or managed KMS** — Protect signing keys
-- **Authenticated artifact distribution** — Prevent MITM/re-signing attacks
-- **External key pinning** — Verify signer identity out-of-band
-
-### Important
-
-- **Host hardening and least-privilege service accounts**
-- **Strong network segmentation and authenticated service perimeter**
-- **Continuous monitoring of verification failures and unusual launch patterns**
-
-### Recommended
-
-- **Short artifact lifetimes** — Limit exposure window if key compromised
-- **Audit logging** — Track compilation and execution events
-- **Incident response plan** — Define process for key compromise
-
-## Threat Model Summary
-
-| Threat | Mitigation | Limitation |
-|--------|------------|------------|
-| Disk extraction | AES-256-GCM encryption | Master secret in binary |
-| Unauthorized execution | Fingerprint binding | Privileged spoofing possible |
-| Artifact tampering | Ed25519 signature | Self-validating, not identity-binding |
-| Dynamic analysis | memfd + anti-debug | Sophisticated bypass possible |
-| Memory extraction | Memory-only execution | Root can dump memory |
-
-**Bottom line**: Snapfzz Seal raises the cost of attacks but does not provide perfect security. Use defense-in-depth with additional controls appropriate to your threat model.
-
-## References
+## 7. References
 
 ### Cryptographic Standards
 
-- **AES-256-GCM**: Dworkin, M. (2007). "Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC". NIST Special Publication 800-38D. [doi:10.6028/NIST.SP.800-38D](https://doi.org/10.6028/NIST.SP.800-38D)
-
-- **HKDF**: Krawczyk, H. (2010). "Cryptographic Extraction and Key Derivation: The HKDF Scheme". RFC 5869. [doi:10.17487/RFC5869](https://doi.org/10.17487/RFC5869)
-
-- **Ed25519**: Bernstein, D. et al. (2012). "High-speed high-security signatures". Journal of Cryptographic Engineering 4(2). [doi:10.1007/s13389-012-0007-1](https://doi.org/10.1007/s13389-012-0007-1)
+- Dworkin, M. (2007). "Recommendation for Block Cipher Modes of Operation: Galois/Counter Mode (GCM) and GMAC". NIST Special Publication 800-38D. [doi:10.6028/NIST.SP.800-38D](https://doi.org/10.6028/NIST.SP.800-38D)
+- Krawczyk, H. & Eronen, P. (2010). "HMAC-based Extract-and-Expand Key Derivation Function (HKDF)". RFC 5869. [doi:10.17487/RFC5869](https://doi.org/10.17487/RFC5869)
+- Bernstein, D. J., Duif, N., Lange, T., Schwabe, P. & Yang, B.-Y. (2012). "High-speed high-security signatures". *Journal of Cryptographic Engineering* 2(2):77–89. [doi:10.1007/s13389-012-0007-1](https://doi.org/10.1007/s13389-012-0007-1)
 
 ### Secret Sharing
 
-- **Shamir Secret Sharing**: Shamir, A. (1979). "How to Share a Secret". Communications of the ACM 22(11):612-613. [doi:10.1145/359168.359176](https://doi.org/10.1145/359168.359176)
-
-### White-Box Cryptography
-
-- **White-Box AES**: Chow, S. et al. (2002). "White-Box Cryptography and an AES Implementation". Selected Areas in Cryptography (SAC 2002), LNCS 2595. [doi:10.1007/3-540-36492-7_17](https://doi.org/10.1007/3-540-36492-7_17)
+- Shamir, A. (1979). "How to Share a Secret". *Communications of the ACM* 22(11):612–613. [doi:10.1145/359168.359176](https://doi.org/10.1145/359168.359176)
 
 ### Security Principles
 
-- **Defense-in-Depth**: Saltzer, J. & Schroeder, M. (1975). "The Protection of Information in Computer Systems". Proceedings of the IEEE 63(9). [doi:10.1109/PROC.1975.9939](https://doi.org/10.1109/PROC.1975.9939)
+- Saltzer, J. H. & Schroeder, M. D. (1975). "The Protection of Information in Computer Systems". *Proceedings of the IEEE* 63(9):1278–1308. [doi:10.1109/PROC.1975.9939](https://doi.org/10.1109/PROC.1975.9939)

@@ -1,381 +1,173 @@
-# Agent 4: Integrity Binding
+# Agent 4: Binary Integrity Binding
 
-## Mission
+## 1. Purpose
 
-Make decryption key depend on binary integrity. Any modification breaks decryption.
+The integrity subsystem binds the launcher's decryption key to the content of the launcher binary itself. Rather than using the embedded secret directly as a decryption key, the launcher derives its working key as a function of both the embedded secret and a hash of the binary's non-secret regions. Any post-compilation modification to the launcher binary — such as patching anti-analysis checks, injecting code, or altering constants — changes the integrity hash, which in turn changes the derived key, causing decryption to fail. The tamper detection mechanism also supports explicit integrity verification against a hash embedded at compile time.
 
 ---
 
-## Concept
+## 2. Design Rationale
+
+### 2.1 Key Derivation with Integrity Binding
+
+The core security property is expressed by `bind_secret_to_hash`:
 
 ```rust
-// Current: key = extract_secret(binary)
-// Enhanced: key = derive(integrity_hash(binary), embedded_secret)
-
-// If binary is modified:
-// - integrity_hash changes
-// - key changes
-// - decryption fails
+fn bind_secret_to_hash(secret: &[u8; 32], integrity_hash: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(secret);
+    hasher.update(integrity_hash);
+    hasher.finalize().into()
+}
 ```
 
+The resulting key is `SHA-256(secret || integrity_hash)`. Any change to the binary that affects the integrity hash produces a completely different key, which in practice causes AES-GCM decryption to fail with an authentication tag mismatch rather than producing incorrect plaintext.
+
+### 2.2 Region Exclusion
+
+The embedded secret shares, tamper hash, and payload content are all variable by design: they are written into the binary at compile time and change with each build or key rotation. These regions must be excluded from the integrity hash to prevent the hash from being invalidated by the embedding process itself. The `find_secret_regions` function identifies all such excluded regions by scanning for known marker values in the binary.
+
+### 2.3 ELF-Aware Region Selection
+
+On Linux, the integrity hash covers the ELF executable (`PT_LOAD` executable flag set) and data (non-executable `PT_LOAD`) segments rather than the entire binary. This ensures that the hash covers the sections that a binary patcher would modify (code, read-only data, initialized data) while avoiding sections such as padding or dynamic linking metadata that may not be meaningful targets. On non-Linux platforms, the entire binary slice is used as a single code region.
+
 ---
 
-## Implementation
+## 3. Implementation Details
 
-**File: `crates/snapfzz-seal-launcher/src/integrity.rs`** (NEW FILE)
+### 3.1 IntegrityRegions
+
+`crates/snapfzz-seal-core/src/integrity.rs` defines:
 
 ```rust
-use sha2::{Sha256, Digest};
-use std::fs;
-use snapfzz_seal_core::error::SealError;
-
-/// Binary regions for integrity checking
 pub struct IntegrityRegions {
-    /// Code section boundaries
     pub code_start: usize,
     pub code_end: usize,
-    
-    /// Read-only data section
     pub data_start: usize,
     pub data_end: usize,
-    
-    /// Regions to exclude (where secrets are embedded)
     pub excluded: Vec<(usize, usize)>,
 }
+```
 
-/// Compute hash of running binary
-pub fn compute_binary_integrity_hash(
-    binary: &[u8],
-    regions: &IntegrityRegions,
-) -> Result<[u8; 32], SealError> {
-    let mut hasher = Sha256::new();
-    
-    // Hash code section (excluding embedded secrets)
-    hash_region_with_exclusions(
-        &mut hasher,
-        binary,
-        regions.code_start,
-        regions.code_end,
-        &regions.excluded,
-    );
-    
-    // Hash data section (excluding embedded secrets)
-    hash_region_with_exclusions(
-        &mut hasher,
-        binary,
-        regions.data_start,
-        regions.data_end,
-        &regions.excluded,
-    );
-    
-    let result = hasher.finalize();
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&result);
-    
-    Ok(hash)
-}
+Regions are expressed as byte offsets into the binary slice. The `excluded` list is sorted and merged by `merge_regions` before use to ensure correct handling of overlapping exclusion intervals.
 
+### 3.2 find_secret_regions
+
+```rust
+pub fn find_secret_regions(binary: &[u8]) -> Vec<(usize, usize)>
+```
+
+This function scans the binary for all occurrences of each of the following markers and adds each found region to the exclusion list:
+
+- `SECRET_MARKER_0` through `SECRET_MARKER_4` (via `get_secret_marker(idx)`): each occurrence excludes the marker (32 bytes) plus the following 32-byte slot.
+- `LAUNCHER_TAMPER_MARKER`: excludes the marker plus the following 32-byte slot.
+- `LAUNCHER_PAYLOAD_SENTINEL`: excludes from the first occurrence of the sentinel to the end of the binary (`binary.len()`).
+
+The function `collect_marker_regions` handles multi-occurrence scanning within each marker type. Overlapping or adjacent exclusion regions are merged by `merge_regions`, which sorts by start offset and extends intervals greedily.
+
+### 3.3 ELF Parsing (Linux)
+
+The function `is_supported_elf` validates that the binary is ELF64 little-endian x86-64 by checking the magic bytes, ELF class (byte 4 == 2 for 64-bit), data encoding (byte 5 == 1 for little-endian), and machine type (bytes 18-19 == `0x3e` for x86-64).
+
+`parse_elf_regions` reads the program header table using `phoff` (offset 32), `phentsize` (offset 54), and `phnum` (offset 56). For each `PT_LOAD` segment (type == 1), it categorizes the segment as code (flags & `PF_X = 0x1`) or data (non-executable). The file offset (`p_offset` at header offset 8) and file size (`p_filesz` at header offset 32) are used to compute byte ranges. Multiple executable segments are merged into a single `code_range` by `extend_range`; similarly for data. The function requires at least one executable segment; absence causes an `InvalidInput` error. An absent data segment results in `data_range = (0, 0)` (zero-length, excluded from hashing).
+
+Bounds checking is performed at every binary read via `read_slice`, `read_u16`, and `read_u64`, each of which return `InvalidInput` on out-of-bounds access.
+
+### 3.4 hash_region_with_exclusions
+
+```rust
 fn hash_region_with_exclusions(
     hasher: &mut Sha256,
     binary: &[u8],
     start: usize,
     end: usize,
     excluded: &[(usize, usize)],
-) {
-    let mut pos = start;
-    
-    // Sort exclusions by start position
-    let mut sorted_exclusions = excluded.to_vec();
-    sorted_exclusions.sort_by_key(|(s, _)| *s);
-    
-    for (excl_start, excl_end) in &sorted_exclusions {
-        // Hash everything before this exclusion
-        if pos < *excl_start && *excl_start <= end {
-            hasher.update(&binary[pos..*excl_start]);
-        }
-        
-        // Skip the excluded region
-        pos = (*excl_end).max(pos);
-    }
-    
-    // Hash remaining portion
-    if pos < end {
-        hasher.update(&binary[pos..end]);
-    }
-}
+)
+```
 
-/// Derive decryption key with integrity binding
+This function feeds contiguous byte ranges of `binary[start..end]` into the hasher, skipping any subranges that overlap with the exclusion list. The exclusion list is assumed to be pre-sorted by `merge_regions`. A `cursor` variable tracks the current hashing position; for each exclusion interval clipped to the region boundaries, content before the exclusion is hashed and the cursor advances past the exclusion.
+
+### 3.5 Public API
+
+Three public functions are provided:
+
+**`compute_binary_integrity_hash`**: Hashes the code and data regions (minus exclusions). Requires at least one non-empty region; returns `InvalidInput` otherwise.
+
+**`derive_key_with_integrity`** (Linux: reads `/proc/self/exe`; non-Linux: uses `bind_secret_to_hash(secret, secret)` as a deterministic fallback):
+
+```rust
 pub fn derive_key_with_integrity(
     embedded_secret: &[u8; 32],
     binary_path: Option<&str>,
-) -> Result<[u8; 32], SealError> {
-    // Read running binary
-    #[cfg(target_os = "linux")]
-    let binary = {
-        let path = binary_path.unwrap_or("/proc/self/exe");
-        fs::read(path).map_err(|e| {
-            SealError::IntegrityError(format!("Failed to read binary: {}", e))
-        })?
-    };
-    
-    #[cfg(not(target_os = "linux"))]
-    let binary = {
-        return Err(SealError::IntegrityError(
-            "Integrity check only supported on Linux".to_string()
-        ));
-    };
-    
-    // Find integrity regions
-    let regions = find_integrity_regions(&binary)?;
-    
-    // Compute integrity hash
-    let integrity_hash = compute_binary_integrity_hash(&binary, &regions)?;
-    
-    // Derive key: hash(secret || integrity_hash)
-    let mut hasher = Sha256::new();
-    hasher.update(embedded_secret);
-    hasher.update(&integrity_hash);
-    
-    let result = hasher.finalize();
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&result);
-    
-    tracing::debug!(
-        integrity_hash = %hex::encode(&integrity_hash[..8]),
-        "Derived integrity-bound key"
-    );
-    
-    Ok(key)
-}
+) -> Result<[u8; 32], SealError>
+```
 
-/// Find integrity regions in the binary
-fn find_integrity_regions(binary: &[u8]) -> Result<IntegrityRegions, SealError> {
-    // Simple approach: use entire binary except secret regions
-    
-    // Find ELF sections if possible
-    #[cfg(target_os = "linux")]
-    {
-        // Try to parse ELF headers for more precise regions
-        if binary.len() > 64 && &binary[0..4] == b"\x7fELF" {
-            return parse_elf_regions(binary);
-        }
-    }
-    
-    // Fallback: use entire binary
-    Ok(IntegrityRegions {
-        code_start: 0,
-        code_end: binary.len(),
-        data_start: 0,
-        data_end: 0, // No separate data section
-        excluded: find_secret_regions(binary)?,
-    })
-}
+**`derive_key_with_integrity_from_binary`** (takes binary bytes directly; used in assembly and tests):
 
-/// Find regions where secrets are embedded (to exclude from integrity hash)
-fn find_secret_regions(binary: &[u8]) -> Result<Vec<(usize, usize)>, SealError> {
-    let mut regions = Vec::new();
-    
-    // Find secret markers
-    use snapfzz_seal_core::types::{
-        SECRET_MARKER_0, SECRET_MARKER_1, SECRET_MARKER_2,
-        SECRET_MARKER_3, SECRET_MARKER_4,
-        TAMPER_MARKER, PAYLOAD_SENTINEL,
-    };
-    
-    let markers: &[&[u8; 32]] = &[
-        &SECRET_MARKER_0,
-        &SECRET_MARKER_1,
-        &SECRET_MARKER_2,
-        &SECRET_MARKER_3,
-        &SECRET_MARKER_4,
-        &TAMPER_MARKER,
-        &PAYLOAD_SENTINEL,
-    ];
-    
-    for marker in markers {
-        if let Some(pos) = binary.windows(32).position(|w| w == *marker) {
-            // Exclude marker + 32 bytes after (the secret)
-            regions.push((pos, pos + 32 + 32));
-        }
-    }
-    
-    // Also exclude payload section (after PAYLOAD_SENTINEL)
-    // This is the encrypted agent, not part of integrity
-    
-    Ok(regions)
-}
+```rust
+pub fn derive_key_with_integrity_from_binary(
+    embedded_secret: &[u8; 32],
+    binary: &[u8],
+) -> Result<[u8; 32], SealError>
+```
 
-/// Parse ELF binary to find code and data sections
-#[cfg(target_os = "linux")]
-fn parse_elf_regions(binary: &[u8]) -> Result<IntegrityRegions, SealError> {
-    // ELF header parsing (simplified)
-    // For production, use proper ELF parser
-    
-    let mut code_start = 0;
-    let mut code_end = 0;
-    let mut data_start = 0;
-    let mut data_end = 0;
-    
-    // ELF64 header
-    if binary.len() < 64 {
-        return Err(SealError::IntegrityError("Binary too small".to_string()));
-    }
-    
-    // Check ELF magic
-    if &binary[0..4] != b"\x7fELF" {
-        return Err(SealError::IntegrityError("Not an ELF binary".to_string()));
-    }
-    
-    // Get program header offset (at offset 32 for ELF64)
-    let phoff = u64::from_le_bytes([
-        binary[32], binary[33], binary[34], binary[35],
-        binary[36], binary[37], binary[38], binary[39],
-    ]);
-    
-    // Get number of program headers (at offset 56 for ELF64)
-    let phnum = u16::from_le_bytes([binary[56], binary[57]]) as usize;
-    
-    // Parse program headers
-    for i in 0..phnum {
-        let ph_offset = phoff as usize + i * 56; // 56 bytes per program header
-        
-        if ph_offset + 56 > binary.len() {
-            break;
-        }
-        
-        // Get segment type (at offset 0 in program header)
-        let p_type = u32::from_le_bytes([
-            binary[ph_offset], binary[ph_offset + 1],
-            binary[ph_offset + 2], binary[ph_offset + 3],
-        ]);
-        
-        // Get segment flags (at offset 4)
-        let p_flags = u32::from_le_bytes([
-            binary[ph_offset + 4], binary[ph_offset + 5],
-            binary[ph_offset + 6], binary[ph_offset + 7],
-        ]);
-        
-        // Get segment file offset (at offset 8)
-        let p_offset = u64::from_le_bytes([
-            binary[ph_offset + 8], binary[ph_offset + 9],
-            binary[ph_offset + 10], binary[ph_offset + 11],
-            binary[ph_offset + 12], binary[ph_offset + 13],
-            binary[ph_offset + 14], binary[ph_offset + 15],
-        ]);
-        
-        // Get segment file size (at offset 32)
-        let p_filesz = u64::from_le_bytes([
-            binary[ph_offset + 32], binary[ph_offset + 33],
-            binary[ph_offset + 34], binary[ph_offset + 35],
-            binary[ph_offset + 36], binary[ph_offset + 37],
-            binary[ph_offset + 38], binary[ph_offset + 39],
-        ]);
-        
-        // PT_LOAD = 1
-        if p_type == 1 {
-            // Check if executable (PF_X = 0x1)
-            if p_flags & 0x1 != 0 {
-                // Code segment
-                if code_start == 0 {
-                    code_start = p_offset as usize;
-                }
-                code_end = (p_offset + p_filesz) as usize;
-            } else {
-                // Data segment
-                if data_start == 0 {
-                    data_start = p_offset as usize;
-                }
-                data_end = (p_offset + p_filesz) as usize;
-            }
-        }
-    }
-    
-    let excluded = find_secret_regions(binary)?;
-    
-    Ok(IntegrityRegions {
-        code_start,
-        code_end,
-        data_start,
-        data_end,
-        excluded,
-    })
-}
+**`verify_binary_integrity`** (Linux: reads the binary and compares computed hash against expected; non-Linux: always returns `Ok(())`; mismatch returns `SealError::TamperDetected`):
 
-/// Verify binary hasn't been modified
-pub fn verify_integrity(
+```rust
+pub fn verify_binary_integrity(
     expected_hash: &[u8; 32],
-) -> Result<(), SealError> {
-    #[cfg(target_os = "linux")]
-    {
-        let binary = fs::read("/proc/self/exe")?;
-        let regions = find_integrity_regions(&binary)?;
-        let computed = compute_binary_integrity_hash(&binary, &regions)?;
-        
-        if computed != *expected_hash {
-            tracing::error!(
-                expected = %hex::encode(expected_hash),
-                computed = %hex::encode(&computed),
-                "Integrity check failed"
-            );
-            return Err(SealError::IntegrityViolation);
-        }
-        
-        tracing::info!("Integrity check passed");
-        Ok(())
-    }
-    
-    #[cfg(not(target_os = "linux"))]
-    {
-        // Skip on non-Linux
-        Ok(())
-    }
-}
+    binary_path: Option<&str>,
+) -> Result<(), SealError>
+```
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_integrity_regions() {
-        // Create test binary
-        let mut binary = vec![0u8; 1024];
-        
-        // Add a marker
-        binary[100..132].copy_from_slice(&SECRET_MARKER_0);
-        
-        let regions = find_integrity_regions(&binary).unwrap();
-        
-        // Should exclude marker + 32 bytes
-        assert!(regions.excluded.contains(&(100, 164)));
-    }
-    
-    #[test]
-    fn test_hash_with_exclusions() {
-        let mut binary = vec![0xAAu8; 100];
-        binary[40..60].fill(0xBB); // This will be excluded
-        
-        let regions = IntegrityRegions {
-            code_start: 0,
-            code_end: 100,
-            data_start: 0,
-            data_end: 0,
-            excluded: vec![(40, 60)],
-        };
-        
-        let hash = compute_binary_integrity_hash(&binary, &regions).unwrap();
-        
-        // Hash should be deterministic
-        let hash2 = compute_binary_integrity_hash(&binary, &regions).unwrap();
-        assert_eq!(hash, hash2);
-        
-        // Changing excluded region shouldn't change hash
-        binary[45] = 0xCC;
-        let hash3 = compute_binary_integrity_hash(&binary, &regions).unwrap();
-        assert_eq!(hash, hash3);
-        
-        // Changing non-excluded region should change hash
-        binary[10] = 0xDD;
-        let hash4 = compute_binary_integrity_hash(&binary, &regions).unwrap();
-        assert_ne!(hash, hash4);
-    }
-}
+### 3.6 Assembly Integration
+
+`crates/snapfzz-seal-compiler/src/assemble.rs` integrates the integrity subsystem as follows:
+
+```rust
+let regions = find_integrity_regions(&launcher_with_whitebox)?;
+let launcher_integrity_hash = compute_binary_integrity_hash(&launcher_with_whitebox, &regions)?;
+let integrity_key = derive_key_with_integrity_from_binary(&env_key, &launcher_with_whitebox)?;
+```
+
+The `env_key` (derived from the master secret and user/session fingerprints) is bound to the launcher's integrity hash to produce `integrity_key`, which is then used to encrypt the payload. The tamper hash embedded in the binary via `embed_tamper_hash` is a SHA-256 digest of the assembled launcher bytes (before whitebox table embedding), computed as:
+
+```rust
+let mut tamper_hash = [0_u8; 32];
+tamper_hash.copy_from_slice(&Sha256::digest(&launcher_with_decoys));
+```
+
+This tamper hash is embedded at the `LAUNCHER_TAMPER_MARKER` slot and is itself excluded from the integrity region, so the integrity-bound key derivation remains consistent.
+
+---
+
+## 4. Security Properties
+
+**Implemented:**
+- Any modification to the executable or data regions of the launcher binary outside the excluded marker/slot/payload zones will change `compute_binary_integrity_hash`, which will change `derive_key_with_integrity`, which will cause AES-GCM decryption to fail with an authentication tag mismatch.
+- The exclusion mechanism correctly handles all variable regions (share slots, tamper hash slot, appended payload) so that re-embedding does not invalidate the hash.
+- `verify_binary_integrity` enables explicit hash comparison against the compile-time-embedded tamper hash, providing a secondary check independent of decryption success.
+- The non-Linux fallback for `derive_key_with_integrity_from_binary` uses `bind_secret_to_hash(secret, secret)` — a deterministic but non-binary-dependent derivation — rather than silently returning the raw secret.
+
+**Limitations:**
+- On non-Linux platforms, `derive_key_with_integrity` does not perform binary integrity binding. The derived key is a fixed function of the secret only, providing no protection against binary modification on those platforms.
+- An adversary who can read the binary at rest can compute the same integrity hash and derive the same key, since the hash is deterministic and uses only the binary content as input.
+- `verify_binary_integrity` on non-Linux always returns `Ok(())` regardless of the `expected_hash` argument, offering no protection.
+- The ELF parser does not validate all consistency constraints of the ELF format; a carefully malformed binary could produce unexpected region boundaries.
+
+---
+
+## 5. Platform Restrictions
+
+- **Linux only:** ELF parsing, `find_integrity_regions` ELF path, `derive_key_with_integrity` binary read (via `/proc/self/exe`), and `verify_binary_integrity` all execute functional code only on Linux.
+- **Linux x86-64 only:** `is_supported_elf` validates ELF class, encoding, and machine type fields. Binaries for other architectures (e.g., aarch64 Linux) will not match `is_supported_elf` and will fall back to whole-binary hashing.
+- **macOS / other:** All integrity operations fall back to deterministic stubs that do not read the binary.
+
+---
+
+## 6. Known Limitations
+
+1. The `hash_region_with_exclusions` function requires the exclusion list to be pre-sorted in ascending order by start offset. `merge_regions` guarantees this invariant, but callers that construct `IntegrityRegions` manually and pass unsorted exclusion lists will produce incorrect hashes silently.
+2. The tamper hash embedded in the binary covers the launcher bytes before whitebox table embedding. The whitebox tables are appended to the binary after the tamper hash is computed and are excluded from the tamper hash region by the payload sentinel mechanism only if the sentinel appears before the tables. If the whitebox tables are appended after the payload sentinel, they are automatically excluded by the `LAUNCHER_PAYLOAD_SENTINEL` exclusion in `find_secret_regions`. Callers should verify this ordering assumption holds for their assembly pipeline.
+3. The integrity hash operates on file offsets, not virtual addresses. If the binary is loaded at a different memory address (as is typical for PIE executables), the integrity hash computed against `/proc/self/exe` will still match the compile-time hash, which is correct behavior. However, in-memory patching (e.g., modifying `.text` after `mmap`) will not be detected unless the launcher re-reads and hashes the on-disk binary.
+4. There is no mechanism to re-verify integrity after secret reconstruction. The single integrity check occurs during key derivation; subsequent in-memory modifications to the launcher are undetected.

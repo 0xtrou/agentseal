@@ -1,599 +1,151 @@
-# Agent 5: White-Box Cryptography (CRITICAL)
+# Agent 5: White-Box Cryptography
 
-## Mission
+## 1. Purpose
 
-Implement white-box AES to make key extraction computationally infeasible.
+The white-box subsystem generates a set of key-dependent lookup tables that are embedded in the launcher binary in place of the raw master key. The intent is to raise the cost of static key extraction: rather than a 32-byte key appearing as a contiguous blob, the key material is dispersed across approximately 57 000 bytes of lookup table data structured as T-boxes and mixing tables. At runtime, these tables are used to perform AES-like decryption without a directly recoverable key value.
 
-**This is the most important layer.**
-
----
-
-## Background
-
-White-box cryptography hides the key inside lookup tables instead of storing it directly.
-
-**Standard AES:**
-```
-key → AES_encrypt(plaintext, key) → ciphertext
-```
-
-**White-Box AES:**
-```
-lookup_tables → WB_encrypt(plaintext, tables) → ciphertext
-// Key is "spread" across thousands of tables
-// No single table reveals the key
-// Must reverse-engineer entire structure
-```
+**Important caveat:** The current implementation is a structural approximation of the Chow et al. white-box AES construction and does not constitute a cryptographically sound white-box scheme. The limitations are described in detail in Section 6.
 
 ---
 
-## Implementation Strategy
+## 2. Design Rationale
 
-### Option A: Use Existing Library (RECOMMENDED)
+### 2.1 White-Box AES Concept
 
-**Find/implement:**
-1. `whitebox-aes` crate (if exists)
-2. Port from C library (e.g., Chow's implementation)
-3. Implement from academic papers
+In a standard AES implementation, the key is loaded into registers at runtime and is in principle recoverable by a debugger or memory dump. White-box AES replaces the key-schedule-dependent transformations with precomputed lookup tables that absorb the key into their entries. An adversary who can observe only the table lookups cannot straightforwardly extract the key, because each table entry is a function of both the key and the plaintext/ciphertext bytes.
 
-### Option B: Implement from Scratch
+The Chow et al. (2002) construction achieves this by:
+1. Combining SubBytes and AddRoundKey into key-dependent T-boxes.
+2. Composing T-box outputs with MixColumns using XOR-decomposed lookup tables.
+3. Applying random bijections at table boundaries to prevent the key from appearing at any intermediate computation point.
 
-Based on:
-- Chow et al. 2002: "White-Box Cryptography and an AES Implementation"
-- Karroumi 2010: "Protecting White-Box AES with Dual Ciphers"
+The current implementation incorporates steps 1 and 2 structurally, but the bijection application (step 3) is partial and does not achieve the security properties of the full Chow construction.
+
+### 2.2 Non-Standard Round Key Derivation
+
+AES-256 key schedule uses an iterative process involving S-box substitution and XOR with round constants. This implementation derives each of the 14 round keys using SHA-256:
+
+```rust
+fn derive_round_key(key: &[u8; 32], round: usize) -> [u8; 16] {
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    hasher.update((round as u32).to_le_bytes());
+    hasher.finalize().into()  // uses first 16 bytes
+}
+```
+
+This substitution means the generated tables are **not** compatible with standard AES-256 encryption. Ciphertext produced by standard AES-256 with the same key cannot be decrypted using these tables. The tables form their own self-consistent cipher, but it is not standard AES.
 
 ---
 
-## Architecture
+## 3. Implementation Details
+
+### 3.1 Table Types
+
+Three table types are defined in `crates/snapfzz-seal-core/src/whitebox/tables.rs`:
+
+- **`TBox`**: A 256-entry byte-to-byte lookup table for a single byte position in a round. Fields: `round: usize`, `byte_idx: usize`, `table: [u8; 256]`.
+- **`TypeI`**: A set of four column tables, each containing four 256-entry row tables, for use in mixing. Fields: `round: usize`, `tables: Vec<[[u8; 256]; 4]>`.
+- **`TypeII`**: Identical structure to `TypeI`, used for the inverse mixing pass. Fields: `round: usize`, `tables: Vec<[[u8; 256]; 4]>`.
+
+`WhiteBoxTables` aggregates these:
 
 ```rust
-// Build time: Generate tables
-let master_key = [0x42; 32];
-let wb_tables = WhiteBoxAES::generate_tables(&master_key);
-
-// Tables contain:
-// - T-boxes (key-dependent S-box transformations)
-// - Type I tables (input mixing)
-// - Type II tables (output mixing)
-// - Randomization (obfuscation)
-
-// Runtime: Use tables for decryption
-let plaintext = wb_tables.decrypt(&ciphertext);
-
-// Key is NEVER extracted from tables
-```
-
----
-
-## Implementation
-
-**File: `crates/snapfzz-seal-core/src/whitebox/mod.rs`** (NEW FILE)
-
-```rust
-pub mod aes;
-pub mod tables;
-
-pub use aes::WhiteBoxAES;
-pub use tables::WhiteBoxTables;
-```
-
-**File: `crates/snapfzz-seal-core/src/whitebox/aes.rs`** (NEW FILE)
-
-```rust
-use super::tables::{WhiteBoxTables, TBox, TypeI, TypeII};
-use sha2::{Sha256, Digest};
-
-/// White-Box AES-256 implementation
-pub struct WhiteBoxAES {
-    tables: WhiteBoxTables,
-}
-
-impl WhiteBoxAES {
-    /// Generate white-box tables from key
-    /// This is done at BUILD time
-    pub fn generate_tables(key: &[u8; 32]) -> WhiteBoxTables {
-        let mut tables = WhiteBoxTables::new();
-        
-        // AES-256 has 14 rounds
-        for round in 0..14 {
-            // Generate round key
-            let round_key = Self::derive_round_key(key, round);
-            
-            // Create T-boxes for this round
-            for byte_idx in 0..16 {
-                tables.t_boxes.push(Self::generate_t_box(
-                    &round_key,
-                    round,
-                    byte_idx,
-                ));
-            }
-        }
-        
-        // Generate mixing tables
-        for round in 0..13 {
-            tables.type_i.push(Self::generate_type_i(round));
-            tables.type_ii.push(Self::generate_type_ii(round + 1));
-        }
-        
-        // Add randomization for security
-        tables.randomize();
-        
-        tables
-    }
-    
-    /// Generate T-box for one byte position
-    /// T-box combines SubBytes + ShiftRows + AddRoundKey
-    fn generate_t_box(
-        round_key: &[u8; 16],
-        round: usize,
-        byte_idx: usize,
-    ) -> TBox {
-        let mut t_box = [0u8; 256];
-        
-        for input_byte in 0u8..=255 {
-            // Apply S-box
-            let s_box_out = SBOX[input_byte as usize];
-            
-            // Add round key byte
-            let key_byte = round_key[byte_idx];
-            let output = s_box_out ^ key_byte;
-            
-            t_box[input_byte as usize] = output;
-        }
-        
-        TBox {
-            round,
-            byte_idx,
-            table: t_box,
-        }
-    }
-    
-    /// Generate Type I mixing tables (input side)
-    fn generate_type_i(round: usize) -> TypeI {
-        // Type I tables mix the outputs of T-boxes
-        // using the MixColumns transformation
-        
-        let mut tables = Vec::new();
-        
-        // For each column of the state
-        for col in 0..4 {
-            let mut column_table = [[0u8; 256]; 4];
-            
-            for row in 0..4 {
-                for input in 0u8..=255 {
-                    // MixColumns coefficients
-                    let coeff = match row {
-                        0 => 2,
-                        1 => 3,
-                        2 => 1,
-                        3 => 1,
-                        _ => unreachable!(),
-                    };
-                    
-                    // GF(2^8) multiplication
-                    let output = gf_mult(coeff, input);
-                    column_table[row][input as usize] = output;
-                }
-            }
-            
-            tables.push(column_table);
-        }
-        
-        TypeI { round, tables }
-    }
-    
-    /// Generate Type II mixing tables (output side)
-    fn generate_type_ii(round: usize) -> TypeII {
-        // Type II tables are the inverse of Type I
-        // Applied before next round's T-boxes
-        
-        let mut tables = Vec::new();
-        
-        for col in 0..4 {
-            let mut column_table = [[0u8; 256]; 4];
-            
-            for row in 0..4 {
-                for input in 0u8..=255 {
-                    // Use inverse MixColumns coefficients
-                    let coeff = match row {
-                        0 => 0x0e,
-                        1 => 0x0b,
-                        2 => 0x0d,
-                        3 => 0x09,
-                        _ => unreachable!(),
-                    };
-                    
-                    let output = gf_mult(coeff, input);
-                    column_table[row][input as usize] = output;
-                }
-            }
-            
-            tables.push(column_table);
-        }
-        
-        TypeII { round, tables }
-    }
-    
-    /// Derive round key from master key
-    fn derive_round_key(key: &[u8; 32], round: usize) -> [u8; 16] {
-        // Simplified: use SHA-256 to derive round keys
-        // For production: use proper AES key schedule
-        
-        let mut hasher = Sha256::new();
-        hasher.update(key);
-        hasher.update((round as u32).to_le_bytes());
-        
-        let result = hasher.finalize();
-        let mut round_key = [0u8; 16];
-        round_key.copy_from_slice(&result[..16]);
-        
-        round_key
-    }
-    
-    /// Decrypt using white-box tables
-    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, WhiteBoxError> {
-        if ciphertext.len() % 16 != 0 {
-            return Err(WhiteBoxError::InvalidLength);
-        }
-        
-        let mut plaintext = Vec::with_capacity(ciphertext.len());
-        
-        for block in ciphertext.chunks(16) {
-            let decrypted_block = self.decrypt_block(block);
-            plaintext.extend_from_slice(&decrypted_block);
-        }
-        
-        Ok(plaintext)
-    }
-    
-    /// Decrypt single 16-byte block
-    fn decrypt_block(&self, block: &[u8]) -> [u8; 16] {
-        let mut state = [0u8; 16];
-        state.copy_from_slice(block);
-        
-        // Reverse rounds (14 rounds for AES-256)
-        for round in (0..14).rev() {
-            state = self.apply_round_tables(round, &state);
-        }
-        
-        state
-    }
-    
-    /// Apply lookup tables for one round
-    fn apply_round_tables(&self, round: usize, state: &[u8; 16]) -> [u8; 16] {
-        let mut new_state = [0u8; 16];
-        
-        // Apply T-boxes
-        for byte_idx in 0..16 {
-            let t_box_idx = round * 16 + byte_idx;
-            if t_box_idx < self.tables.t_boxes.len() {
-                let t_box = &self.tables.t_boxes[t_box_idx];
-                new_state[byte_idx] = t_box.table[state[byte_idx] as usize];
-            }
-        }
-        
-        // Apply mixing tables (except last round)
-        if round < 13 {
-            if round < self.tables.type_i.len() {
-                new_state = self.apply_mixing(&self.tables.type_i[round], &new_state);
-            }
-        }
-        
-        new_state
-    }
-    
-    fn apply_mixing(&self, type_i: &TypeI, state: &[u8; 16]) -> [u8; 16] {
-        let mut new_state = [0u8; 16];
-        
-        for (col_idx, column_table) in type_i.tables.iter().enumerate() {
-            for row in 0..4 {
-                let state_idx = col_idx * 4 + row;
-                let mut mixed = 0u8;
-                
-                for (i, table) in column_table.iter().enumerate() {
-                    mixed ^= table[state[col_idx * 4 + i] as usize];
-                }
-                
-                new_state[state_idx] = mixed;
-            }
-        }
-        
-        new_state
-    }
-}
-
-/// AES S-box (lookup table for SubBytes)
-const SBOX: [u8; 256] = [
-    0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
-    0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
-    0xb7, 0xfd, 0x93, 0x26, 0x36, 0x3f, 0xf7, 0xcc, 0x34, 0xa5, 0xe5, 0xf1, 0x71, 0xd8, 0x31, 0x15,
-    0x04, 0xc7, 0x23, 0xc3, 0x18, 0x96, 0x05, 0x9a, 0x07, 0x12, 0x80, 0xe2, 0xeb, 0x27, 0xb2, 0x75,
-    0x09, 0x83, 0x2c, 0x1a, 0x1b, 0x6e, 0x5a, 0xa0, 0x52, 0x3b, 0xd6, 0xb3, 0x29, 0xe3, 0x2f, 0x84,
-    0x53, 0xd1, 0x00, 0xed, 0x20, 0xfc, 0xb1, 0x5b, 0x6a, 0xcb, 0xbe, 0x39, 0x4a, 0x4c, 0x58, 0xcf,
-    0xd0, 0xef, 0xaa, 0xfb, 0x43, 0x4d, 0x33, 0x85, 0x45, 0xf9, 0x02, 0x7f, 0x50, 0x3c, 0x9f, 0xa8,
-    0x51, 0xa3, 0x40, 0x8f, 0x92, 0x9d, 0x38, 0xf5, 0xbc, 0xb6, 0xda, 0x21, 0x10, 0xff, 0xf3, 0xd2,
-    0xcd, 0x0c, 0x13, 0xec, 0x5f, 0x97, 0x44, 0x17, 0xc4, 0xa7, 0x7e, 0x3d, 0x64, 0x5d, 0x19, 0x73,
-    0x60, 0x81, 0x4f, 0xdc, 0x22, 0x2a, 0x90, 0x88, 0x46, 0xee, 0xb8, 0x14, 0xde, 0x5e, 0x0b, 0xdb,
-    0xe0, 0x32, 0x3a, 0x0a, 0x49, 0x06, 0x24, 0x5c, 0xc2, 0xd3, 0xac, 0x62, 0x91, 0x95, 0xe4, 0x79,
-    0xe7, 0xc8, 0x37, 0x6d, 0x8d, 0xd5, 0x4e, 0xa9, 0x6c, 0x56, 0xf4, 0xea, 0x65, 0x7a, 0xae, 0x08,
-    0xba, 0x78, 0x25, 0x2e, 0x1c, 0xa6, 0xb4, 0xc6, 0xe8, 0xdd, 0x74, 0x1f, 0x4b, 0xbd, 0x8b, 0x8a,
-    0x70, 0x3e, 0xb5, 0x66, 0x48, 0x03, 0xf6, 0x0e, 0x61, 0x35, 0x57, 0xb9, 0x86, 0xc1, 0x1d, 0x9e,
-    0xe1, 0xf8, 0x98, 0x11, 0x69, 0xd9, 0x8e, 0x94, 0x9b, 0x1e, 0x87, 0xe9, 0xce, 0x55, 0x28, 0xdf,
-    0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16,
-];
-
-/// GF(2^8) multiplication
-fn gf_mult(a: u8, b: u8) -> u8 {
-    let mut result = 0u8;
-    let mut a = a;
-    let mut b = b;
-    
-    for _ in 0..8 {
-        if b & 1 != 0 {
-            result ^= a;
-        }
-        
-        let hi_bit = a & 0x80;
-        a <<= 1;
-        
-        if hi_bit != 0 {
-            a ^= 0x1b; // x^8 + x^4 + x^3 + x + 1
-        }
-        
-        b >>= 1;
-    }
-    
-    result
-}
-
-#[derive(Debug)]
-pub enum WhiteBoxError {
-    InvalidLength,
-    DecryptionFailed,
-}
-
-// Import types at top
-use crate::error::SealError;
-```
-
-**File: `crates/snapfzz-seal-core/src/whitebox/tables.rs`** (NEW FILE)
-
-```rust
-/// T-box: combines SubBytes + AddRoundKey
-#[derive(Clone)]
-pub struct TBox {
-    pub round: usize,
-    pub byte_idx: usize,
-    pub table: [u8; 256],
-}
-
-/// Type I mixing tables (input mixing)
-#[derive(Clone)]
-pub struct TypeI {
-    pub round: usize,
-    pub tables: Vec<[[u8; 256]; 4]>,
-}
-
-/// Type II mixing tables (output mixing)
-#[derive(Clone)]
-pub struct TypeII {
-    pub round: usize,
-    pub tables: Vec<[[u8; 256]; 4]>,
-}
-
-/// Complete white-box table set
-#[derive(Clone)]
 pub struct WhiteBoxTables {
     pub t_boxes: Vec<TBox>,
     pub type_i: Vec<TypeI>,
     pub type_ii: Vec<TypeII>,
     pub randomization: Vec<[u8; 16]>,
 }
-
-impl WhiteBoxTables {
-    pub fn new() -> Self {
-        Self {
-            t_boxes: Vec::new(),
-            type_i: Vec::new(),
-            type_ii: Vec::new(),
-            randomization: Vec::new(),
-        }
-    }
-    
-    /// Add randomization to tables
-    /// Makes reverse engineering harder
-    pub fn randomize(&mut self) {
-        use rand::Rng;
-        
-        // Generate random bijections
-        for _ in 0..16 {
-            let mut bijection: [u8; 16] = rand::random();
-            self.randomization.push(bijection);
-        }
-        
-        // Apply randomization to T-boxes
-        for (i, t_box) in self.t_boxes.iter_mut().enumerate() {
-            let rand_idx = i % self.randomization.len();
-            let rand_val = &self.randomization[rand_idx];
-            
-            for (j, entry) in t_box.table.iter_mut().enumerate() {
-                *entry ^= rand_val[j % 16];
-            }
-        }
-    }
-    
-    /// Serialize tables to bytes
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        
-        // Number of T-boxes
-        bytes.extend_from_slice(&(self.t_boxes.len() as u32).to_le_bytes());
-        
-        // T-boxes
-        for t_box in &self.t_boxes {
-            bytes.push(t_box.round as u8);
-            bytes.push(t_box.byte_idx as u8);
-            bytes.extend_from_slice(&t_box.table);
-        }
-        
-        // Number of Type I tables
-        bytes.extend_from_slice(&(self.type_i.len() as u32).to_le_bytes());
-        
-        // Type I tables (simplified serialization)
-        for type_i in &self.type_i {
-            bytes.push(type_i.round as u8);
-            for column_table in &type_i.tables {
-                for row_table in column_table {
-                    bytes.extend_from_slice(row_table);
-                }
-            }
-        }
-        
-        // Type II tables (similar)
-        bytes.extend_from_slice(&(self.type_ii.len() as u32).to_le_bytes());
-        
-        bytes
-    }
-    
-    /// Estimate size in bytes
-    pub fn estimate_size(&self) -> usize {
-        let t_box_size = self.t_boxes.len() * (2 + 256);
-        let type_i_size = self.type_i.len() * (1 + 4 * 4 * 256);
-        let type_ii_size = self.type_ii.len() * (1 + 4 * 4 * 256);
-        
-        t_box_size + type_i_size + type_ii_size + 1000 // overhead
-    }
-}
-
-impl Default for WhiteBoxTables {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 ```
 
----
+The `zeroize` method zeroes T-box table entries and clears the randomization vector using the `zeroize` crate.
 
-## Integration
+### 3.2 Table Generation
 
-**File: `crates/snapfzz-seal-compiler/src/whitebox_embed.rs`** (NEW FILE)
+`WhiteBoxAES::generate_tables(key: &[u8; 32]) -> WhiteBoxTables` in `crates/snapfzz-seal-core/src/whitebox/aes.rs`:
+
+1. For each of 14 rounds (AES-256 round count), derives a 16-byte round key via `derive_round_key`. For each of 16 byte positions, calls `generate_t_box` to produce a `TBox`.
+2. For rounds 0..13, calls `generate_type_i(round)` and `generate_type_ii(round + 1)` to produce one `TypeI` and one `TypeII` table per round (13 each).
+3. Calls `tables.randomize()`.
+
+The resulting counts are: 14 * 16 = **224 T-boxes**, **13 TypeI tables**, **13 TypeII tables**.
+
+**T-box generation:** Each T-box entry for input byte `b` is computed as `INV_SBOX[b] XOR round_key[byte_idx]`. The use of `INV_SBOX` (the AES inverse S-box) is consistent with a decryption-oriented construction.
+
+**Type I (mixing) tables:** GF(2^8) multiplication of each input byte by the inverse MixColumns coefficients (`0x0e, 0x0b, 0x0d, 0x09`), one coefficient per row. These are used to apply the InvMixColumns linear transformation in tabular form.
+
+**Type II tables:** GF(2^8) multiplication by standard MixColumns coefficients (`2, 3, 1, 1`). These apply the forward MixColumns in tabular form.
+
+**Randomization:** `randomize()` generates 16 random 16-byte values and XORs each T-box entry `table[j]` with `randomization[t_box_index % 16][j % 16]`. This randomization is **not invertible** without storing the randomization values alongside the tables. As currently implemented, the randomization corrupts the T-box lookups for any use outside a matched decryption path that accounts for the XOR. The randomization vectors are stored in `WhiteBoxTables.randomization` and are serialized into the embedded binary.
+
+**GF(2^8) arithmetic:** The `gf_mult` function implements multiplication in GF(2^8) with the AES irreducible polynomial `x^8 + x^4 + x^3 + x + 1` (reduction constant `0x1b`) using the standard shift-and-XOR method.
+
+### 3.3 Serialization
+
+`WhiteBoxTables::to_bytes()` serializes in the following order:
+1. 4-byte little-endian T-box count.
+2. For each T-box: 1-byte round, 1-byte byte_idx, 256-byte table. (258 bytes each)
+3. 4-byte little-endian Type I count.
+4. For each Type I entry: 1-byte round, then 4 * 4 * 256 = 4096 bytes of column/row table data. (4097 bytes each)
+5. 4-byte little-endian Type II count. (Type II table data is not serialized beyond the count.)
+
+Note: Type II table data is **not included** in the serialized output despite being present in the `WhiteBoxTables` struct. Only the count is written. This is a current implementation limitation.
+
+Estimated serialized size for a full table set: 224 * 258 + 13 * 4097 + 1000 ≈ 111 273 bytes. The `estimate_whitebox_size` function in `whitebox_embed.rs` returns the hardcoded value `2_000_000`, which overestimates significantly.
+
+### 3.4 Compiler Integration (whitebox_embed.rs)
+
+`crates/snapfzz-seal-compiler/src/whitebox_embed.rs` exposes:
+
+- `WHITEBOX_TABLES_MARKER: &[u8] = b"ASL_WB_TABLES_v1"` — the binary marker used to locate the embedded table slot.
+- `generate_whitebox_tables(master_key: &[u8; 32]) -> WhiteBoxTables`: calls `WhiteBoxAES::generate_tables`.
+- `embed_whitebox_tables(binary: &[u8], tables: &WhiteBoxTables) -> Result<Vec<u8>, SealError>`: searches for `WHITEBOX_TABLES_MARKER` in the binary. If found, writes the serialized tables immediately after the marker, extending the binary slice if needed. If the marker is not found, appends the marker followed by the serialized tables to the end of the binary.
+- `estimate_whitebox_size() -> usize`: returns `2_000_000` (hardcoded, overestimates actual table size by approximately 18x).
+
+In the assembly pipeline (`assemble.rs`):
 
 ```rust
-use snapfzz_seal_core::whitebox::{WhiteBoxAES, WhiteBoxTables};
-
-/// Embed white-box tables instead of plaintext key
-pub fn embed_whitebox_tables(
-    launcher_bytes: &[u8],
-    master_key: &[u8; 32],
-) -> Result<Vec<u8>, SealError> {
-    // Generate white-box tables
-    let tables = WhiteBoxAES::generate_tables(master_key);
-    
-    // Serialize tables
-    let tables_bytes = tables.to_bytes();
-    
-    // Embed tables in binary
-    let mut modified = launcher_bytes.to_vec();
-    
-    // Find tables marker
-    let marker = b"WHITEBOX_TABLES_MARKER";
-    if let Some(pos) = modified.windows(marker.len())
-        .position(|w| w == marker) 
-    {
-        let table_start = pos + marker.len();
-        
-        // Ensure we have space
-        if table_start + tables_bytes.len() > modified.len() {
-            // Extend binary
-            modified.extend_from_slice(&[0u8; 1024 * 1024]); // +1MB
-        }
-        
-        modified[table_start..table_start + tables_bytes.len()]
-            .copy_from_slice(&tables_bytes);
-    } else {
-        // Append tables
-        modified.extend_from_slice(marker);
-        modified.extend_from_slice(&tables_bytes);
-    }
-    
-    tracing::info!(
-        tables_size = tables_bytes.len(),
-        "Embedded white-box tables"
-    );
-    
-    Ok(modified)
-}
+let whitebox_tables = generate_whitebox_tables(&config.master_secret);
+let launcher_with_whitebox = embed_whitebox_tables(&launcher_with_tamper, &whitebox_tables)?;
 ```
 
----
-
-## Files to Create
-
-1. **CREATE:** `crates/snapfzz-seal-core/src/whitebox/mod.rs`
-2. **CREATE:** `crates/snapfzz-seal-core/src/whitebox/aes.rs`
-3. **CREATE:** `crates/snapfzz-seal-core/src/whitebox/tables.rs`
-4. **CREATE:** `crates/snapfzz-seal-compiler/src/whitebox_embed.rs`
-5. **MODIFY:** `crates/snapfzz-seal-core/src/lib.rs` (add pub mod whitebox)
-6. **MODIFY:** `crates/snapfzz-seal-compiler/src/lib.rs` (add mod whitebox_embed)
+The whitebox tables are embedded after the tamper hash is computed, so the tables are excluded from the tamper-bounded hash only if they appear after the payload sentinel in the final binary layout.
 
 ---
 
-## Testing
+## 4. Security Properties
 
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    #[test]
-    fn test_whitebox_roundtrip() {
-        let key = [0x42u8; 32];
-        let tables = WhiteBoxAES::generate_tables(&key);
-        
-        let plaintext = b"Hello, World!!!"; // 16 bytes
-        let ciphertext = some_aes_encrypt(plaintext, &key);
-        
-        let decrypted = tables.decrypt(&ciphertext).unwrap();
-        assert_eq!(decrypted, plaintext);
-    }
-    
-    #[test]
-    fn test_tables_size() {
-        let key = [0x42u8; 32];
-        let tables = WhiteBoxAES::generate_tables(&key);
-        
-        let size = tables.estimate_size();
-        println!("White-box tables size: {} bytes", size);
-        
-        // Should be ~500KB - 2MB
-        assert!(size > 100_000);
-        assert!(size < 5_000_000);
-    }
-}
-```
+**Implemented:**
+- The master key does not appear as a contiguous 32-byte value in the embedded binary. A static search for the key bytes will not find a direct match.
+- T-box entries are key-dependent: each entry encodes the application of the inverse S-box and a round key byte to one input value. The key is distributed across 224 tables of 256 entries each.
+- Randomization adds a per-build XOR layer over T-box entries using values from `rand::random`, making each build's table set distinct in byte content even for the same key.
+- The `WhiteBoxTables::zeroize` method supports explicit clearing of sensitive table content from memory.
+
+**Limitations (see Section 6):**
+- The bijection layer required for the Chow construction to achieve its claimed security properties is absent. The randomization applied is a simple XOR that does not satisfy the algebraic independence requirements of a true white-box implementation.
+- Round keys are derived via SHA-256 rather than the AES key schedule, making the tables incompatible with standard AES and preventing verification against known-answer tests.
+- The Type II table data is not serialized. Any launcher code that attempts to deserialize and use Type II tables from the binary will find them absent.
+- No formal security reduction or hardness argument applies to this construction.
 
 ---
 
-## Success Criteria
+## 5. Platform Restrictions
 
-- [ ] White-box tables generated correctly
-- [ ] Decryption produces correct plaintext
-- [ ] Tables are ~500KB - 2MB in size
-- [ ] No way to extract key from single table
-- [ ] Integration with compiler works
-- [ ] All tests pass
-- [ ] Performance acceptable (<10x slowdown)
+The white-box module (`snapfzz-seal-core/src/whitebox/`) is pure Rust with no platform-specific code. Table generation, serialization, and embedding are platform-independent. The `rand::random` calls in `randomize()` use the platform entropy source.
 
 ---
 
-## Notes
+## 6. Known Limitations
 
-This is a simplified implementation. For production:
+1. **Not a sound white-box implementation.** The Chow et al. construction requires that the composition of encoded T-boxes with random bijections produce tables whose outputs are indistinguishable from random without knowledge of the bijections. The current implementation's `randomize()` applies a non-invertible XOR and does not implement compatible inverse bijections on the input or output side. A decryption path using these tables would need to account for the randomization layer, which is not the case in the current `decrypt` implementation, making the tables non-functional for actual decryption.
 
-1. **Use proven library** if available
-2. **Implement proper AES key schedule** (not SHA-256 derivation)
-3. **Add more randomization layers**
-4. **Consider side-channel resistance**
-5. **Get security audit**
+2. **Non-standard round key schedule.** SHA-256-based round key derivation is not the AES key schedule and produces different subkeys than standard AES. The resulting cipher is custom and has no published security analysis.
 
-**Critical:** A bad white-box implementation is worse than no white-box!
+3. **Type II table data omitted from serialization.** The `to_bytes` method serializes only the Type II count, not the actual table data. Any deserialization code expecting Type II data will find an empty result.
+
+4. **Duplicate Type I coefficients between Type I and Type II.** In the current code, `generate_type_i` uses inverse MixColumns coefficients (`0x0e, 0x0b, 0x0d, 0x09`) and `generate_type_ii` uses forward MixColumns coefficients (`2, 3, 1, 1`). Architecturally these are labelled in opposition to the Chow convention (Type I should use forward MixColumns to transform T-box output; Type II should provide the inverse). The labeling inversion does not affect correctness if both types are consistently applied in the same order, but it differs from the reference construction and complicates maintenance.
+
+5. **Overestimated size constant.** `estimate_whitebox_size()` returns `2_000_000` bytes. Actual serialized table size is approximately 111 000 bytes for 224 T-boxes and 13 Type I entries (with Type II data absent). Code using the estimate for memory allocation or transport sizing will over-allocate significantly.
+
+6. **No production readiness.** This implementation was developed as a structural approximation to inform compiler pipeline integration. Any use of this module for actual key protection requires replacement with a formally analyzed construction (such as a published white-box AES library) or a formal security audit of the full construction including bijection layer, serialization format, and decryption path.

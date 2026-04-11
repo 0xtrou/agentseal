@@ -1,13 +1,14 @@
 # Contributing to Snapfzz Seal
 
-Thank you for your interest in contributing to Snapfzz Seal! This document provides guidelines and instructions for contributing.
+This document describes the procedures and standards expected of contributors to the Snapfzz Seal project.
 
 ## Table of Contents
 
 - [Code of Conduct](#code-of-conduct)
 - [Development Setup](#development-setup)
-- [Development Workflow](#development-workflow)
-- [Testing Requirements](#testing-requirements)
+- [Workspace Structure](#workspace-structure)
+- [Building](#building)
+- [Testing](#testing)
 - [Code Style](#code-style)
 - [Commit Messages](#commit-messages)
 - [Pull Request Process](#pull-request-process)
@@ -15,15 +16,28 @@ Thank you for your interest in contributing to Snapfzz Seal! This document provi
 
 ## Code of Conduct
 
-This project follows the [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct). Please read and adhere to it in all interactions.
+This project follows the [Rust Code of Conduct](https://www.rust-lang.org/policies/code-of-conduct).
 
 ## Development Setup
 
 ### Prerequisites
 
-- **Rust** — Install via [rustup](https://rustup.rs/)
-- **cargo-llvm-cov** — For test coverage: `cargo install cargo-llvm-cov`
-- **cargo-nextest** — For test execution: `cargo install cargo-nextest`
+- **Rust** — stable toolchain, minimum version 1.85 (declared as `rust-version` in
+  `crates/snapfzz-seal/Cargo.toml`). Install via [rustup](https://rustup.rs/). All crates
+  use `edition = "2024"`.
+- **cargo-nextest** — test runner used by CI:
+  ```bash
+  cargo install cargo-nextest
+  ```
+- **cargo-llvm-cov** — coverage tool used by CI:
+  ```bash
+  cargo install cargo-llvm-cov
+  ```
+- **musl toolchain** (Linux, required by the `lint` and `build` CI jobs for the
+  `x86_64-unknown-linux-musl` target):
+  ```bash
+  sudo apt-get install musl-tools
+  ```
 
 ### Clone and Build
 
@@ -33,163 +47,147 @@ cd snapfzz-seal
 cargo build
 ```
 
-### Run Tests
+## Workspace Structure
+
+The repository is a Cargo workspace with resolver version 3. The six crates are:
+
+| Crate | Binary | Purpose |
+|---|---|---|
+| `snapfzz-seal` | `seal` | CLI entry point (keygen, compile, sign, verify) |
+| `snapfzz-seal-launcher` | `seal-launcher` | Runtime launcher with seccomp sandboxing |
+| `snapfzz-seal-core` | — | Cryptographic primitives, key derivation, signing |
+| `snapfzz-seal-compiler` | — | Backend-specific packaging (PyInstaller, Nuitka, Go) |
+| `snapfzz-seal-fingerprint` | — | Environment fingerprint collection |
+| `snapfzz-seal-server` | — | Sandbox HTTP server |
+
+Workspace-level lint configuration (`Cargo.toml`) sets `unsafe_code = "deny"` and
+`missing_docs = "warn"` for all crates, and `clippy::all = "warn"`. Any unsafe block
+requires an explicit `// SAFETY:` justification comment.
+
+## Building
+
+### Development build
 
 ```bash
-cargo test
+cargo build --workspace
 ```
 
-### Check Coverage
+### Release build — BUILD_ID constraint
+
+`snapfzz-seal` and `snapfzz-seal-launcher` must be compiled with the **same `BUILD_ID`
+value**. Both `build.rs` scripts derive deterministic binary markers from this value using
+`SHA-256(build_id || label || "deterministic_marker_v1")`. If the two binaries are built
+with different `BUILD_ID` values the marker lookup will fail at runtime.
 
 ```bash
-cargo llvm-cov nextest --workspace --ignore-filename-regex "main\.rs" --fail-under-lines 90
+BUILD_ID=<value> cargo build --release -p snapfzz-seal -p snapfzz-seal-launcher
 ```
 
-## Development Workflow
+If `BUILD_ID` is not set, both build scripts fall back to the string `"dev"`. This default
+is acceptable for local development but must not be used for distributed sealed binaries.
 
-### 1. Create a Branch
+In CI (`e2e-test.yml`), the `build-binaries` job sets `BUILD_ID=${{ github.sha }}`,
+ensuring every binary pair built within a workflow run shares a consistent identifier.
+
+The `ci.yml` `build` job runs `cargo build --workspace --release` without `BUILD_ID`, which
+is appropriate for a compilation smoke-test; the resulting binaries are not used for E2E
+execution.
+
+### Release profile
+
+The workspace `[profile.release]` uses `opt-level = 3`, `lto = true`,
+`codegen-units = 1`, and `strip = true`. Stripped binaries contain no debug information;
+attach a debugger only to debug builds.
+
+## Testing
+
+### Unit tests
+
+Run the full workspace test suite with nextest (matches the `ci.yml` `test` job):
 
 ```bash
-git checkout -b feature/your-feature-name
+cargo nextest run --workspace
 ```
 
-Use descriptive branch names:
-- `feature/add-new-crypto-algorithm`
-- `fix/seccomp-syscall-whitelist`
-- `docs/update-threat-model`
-- `refactor/fingerprint-derivation`
+The `e2e-test.yml` `lint-and-test` job uses `cargo test --workspace` (standard libtest)
+rather than nextest. Both runners are acceptable locally; CI requires nextest for the
+coverage job.
 
-### 2. Make Your Changes
+### Coverage
 
-- Follow the [Code Style](#code-style) guidelines
-- Add tests for new functionality
-- Update documentation as needed
-- Ensure all tests pass
-
-### 3. Test Coverage
-
-**All pull requests must maintain at least 90% test coverage.**
-
-Run coverage check before submitting:
+The `ci.yml` `coverage` job enforces a minimum of 90% line coverage, excluding `main.rs`
+files. The exact command run in CI is:
 
 ```bash
-cargo llvm-cov nextest --workspace --ignore-filename-regex "main\.rs" --fail-under-lines 90
+cargo llvm-cov nextest \
+  --workspace \
+  --lcov --output-path lcov.info \
+  --summary-only \
+  --ignore-filename-regex "main\.rs" \
+  --fail-under-lines 90
 ```
 
-If coverage is below 90%, the CI will fail. Add tests for uncovered code paths.
+Branch coverage has no enforced threshold in CI and is aspirational only. The 90% line
+coverage threshold is the binding requirement.
 
-### 4. Submit a Pull Request
-
-- Push your branch to your fork
-- Open a PR against the `main` branch
-- Fill out the PR template completely
-- Wait for CI to pass and code review
-
-## Testing Requirements
-
-### Unit Tests
-
-All new functionality must include unit tests. Place tests in the same file as the code:
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_encryption_decryption_roundtrip() {
-        // Test implementation
-    }
-}
-```
-
-### Integration Tests
-
-For cross-module or cross-crate functionality, add integration tests in `tests/` directories.
-
-### Coverage Requirements
-
-| Metric | Requirement |
-|--------|-------------|
-| Line coverage | ≥ 90% |
-| Branch coverage | Aim for ≥ 85% |
-| Critical paths | 100% (crypto, fingerprinting, signature verification) |
-
-### Running Coverage Report
+To generate a local HTML report:
 
 ```bash
-# Generate detailed coverage report
 cargo llvm-cov nextest --workspace --ignore-filename-regex "main\.rs" --html
-
-# Open report
 open target/llvm-cov/html/index.html
 ```
 
+### End-to-end tests
+
+The `e2e-test.yml` workflow exercises three backends — PyInstaller, Nuitka, and Go — against
+a live example agent. The E2E jobs run in parallel after `build-binaries` passes, which
+itself depends on `lint-and-test`. These tests require repository secrets
+(`SNAPFZZ_SEAL_API_KEY`, `SNAPFZZ_SEAL_API_BASE`, `SNAPFZZ_SEAL_MODEL`,
+`SNAPFZZ_SEAL_MASTER_SECRET_HEX`) and cannot be run locally without those credentials.
+
+### Test placement
+
+Unit tests belong in the same file as the code they cover, inside a `#[cfg(test)]` module.
+Integration tests that span multiple modules or crates belong in a `tests/` directory
+within the relevant crate.
+
 ## Code Style
 
-### Rust Formatting
+### Formatting
 
-Run `cargo fmt` before committing. This project uses standard Rust formatting.
+All code must pass `cargo fmt` with default settings:
+
+```bash
+cargo fmt --all -- --check
+```
 
 ### Linting
 
-Run `cargo clippy` and address all warnings:
+All clippy warnings are treated as errors in CI. The exact invocation used in both
+`ci.yml` and `e2e-test.yml` is:
 
 ```bash
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+Note: neither CI workflow passes `--all-features`. Use the same invocation locally to
+match CI behavior.
 
 ### Documentation
 
-- All public functions, structs, and modules must have doc comments
-- Use `///` for doc comments on items
-- Include examples in doc comments when applicable
+All public items require doc comments (`missing_docs = "warn"` at workspace level). Use
+`///` syntax. Include `# Errors`, `# Panics`, and `# Safety` sections where applicable.
 
-```rust
-/// Encrypts data using AES-256-GCM with environment-bound keys.
-///
-/// # Arguments
-///
-/// * `data` - The plaintext data to encrypt
-/// * `fingerprint` - The environment fingerprint for key derivation
-///
-/// # Returns
-///
-/// The encrypted ciphertext with authentication tag
-///
-/// # Errors
-///
-/// Returns an error if encryption fails or the fingerprint is invalid
-///
-/// # Example
-///
-/// ```rust
-/// use snapfzz_seal_core::encrypt;
-///
-/// let plaintext = b"secret data";
-/// let fp = b"user-fingerprint";
-/// let ciphertext = encrypt(plaintext, fp)?;
-/// ```
-pub fn encrypt(data: &[u8], fingerprint: &[u8]) -> Result<Vec<u8>, Error> {
-    // Implementation
-}
-```
+### Unsafe code
 
-### Unsafe Code
+`unsafe_code = "deny"` is set at workspace level. Any unsafe block requires a
+`// SAFETY:` comment explaining why the invariants required by the operation are upheld.
 
-This project has a strict policy on unsafe code:
+### Memory safety
 
-- **Forbidden by default** — `#![deny(unsafe_code)]` is enabled
-- **Allowed only when necessary** — Must be justified and documented
-- **Must include safety comment** — Explain why the unsafe code is sound
-
-```rust
-// SAFETY: This unsafe block is necessary because [reason].
-// The invariants we maintain are [list invariants].
-unsafe {
-    // Unsafe operation
-}
-```
+Use `zeroize` (workspace dependency, includes the `derive` feature) for all types that
+hold key material or other sensitive data. Do not store such data in types that do not
+implement `Zeroize` or `ZeroizeOnDrop`.
 
 ## Commit Messages
 
@@ -203,23 +201,18 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 <footer>
 ```
 
-### Types
+Recognized types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `chore`.
 
-- `feat` — New feature
-- `fix` — Bug fix
-- `docs` — Documentation only
-- `test` — Adding or modifying tests
-- `refactor` — Code refactoring
-- `perf` — Performance improvement
-- `chore` — Maintenance tasks
+The scope should correspond to the affected crate or subsystem (e.g., `core`, `launcher`,
+`compiler`, `fingerprint`, `seccomp`).
 
-### Examples
+Examples:
 
 ```
-feat(encrypt): add ChaCha20-Poly1305 support
+feat(compiler): add Nuitka backend for compiled Python agents
 
-Add alternative AEAD cipher for environments without AES-NI.
-The cipher is selected at compile time via feature flag.
+Integrate the Nuitka compilation pipeline as an alternative to
+PyInstaller. Backend is selected via --backend nuitka at compile time.
 
 Closes #123
 ```
@@ -227,93 +220,82 @@ Closes #123
 ```
 fix(seccomp): allow io_uring syscalls for async runtimes
 
-The seccomp filter was blocking io_uring syscalls used by tokio-uring.
-Added syscalls 425, 426, 427 to the allowlist.
+The seccomp allowlist was blocking io_uring_setup and related syscalls.
+Added syscalls 425, 426, 427.
 
 Fixes #456
 ```
 
 ## Pull Request Process
 
-### Before Submitting
+### Before submitting
 
-1. **Run all checks locally:**
+Run the following checks locally and confirm they pass before opening a PR:
 
 ```bash
-cargo fmt -- --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-cargo llvm-cov nextest --workspace --ignore-filename-regex "main\.rs" --fail-under-lines 90
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
+cargo llvm-cov nextest \
+  --workspace \
+  --lcov --output-path lcov.info \
+  --summary-only \
+  --ignore-filename-regex "main\.rs" \
+  --fail-under-lines 90
 ```
 
-2. **Update documentation:**
-   - Update relevant `.md` files in `docs/` or `website/docs/`
-   - Add inline documentation for new APIs
-   - Update CHANGELOG if applicable
-
-3. **Rebase on main:**
+Rebase on `main` before opening a PR:
 
 ```bash
 git fetch origin
 git rebase origin/main
 ```
 
-### PR Requirements
+### Requirements
 
-- All CI checks must pass
-- At least one approval from a maintainer
-- No merge conflicts
-- Coverage ≥ 90%
+- All CI jobs (`lint`, `test`, `build`, `coverage` in `ci.yml`; `lint-and-test`,
+  `build-binaries`, and the three E2E jobs in `e2e-test.yml`) must pass.
+- Line coverage must remain at or above 90%.
+- At least one maintainer approval is required before merge.
+- Address review comments with new commits; do not rewrite history on a PR branch after
+  review has begun.
 
-### Review Process
+### Review timeline
 
-1. Maintainers will review your PR within 3 business days
-2. Address review feedback with new commits (not force-push)
-3. Once approved, a maintainer will merge your PR
+Maintainers aim to provide an initial review within a few business days. There is no
+guaranteed SLA.
 
 ## Security Considerations
 
-Snapfzz Seal is a security-critical project. When contributing:
+Changes to the following areas carry elevated risk and will receive closer scrutiny during
+review:
 
-### Security-Sensitive Areas
+- `crates/snapfzz-seal-core/src/crypto.rs` — AES-256-GCM encryption and decryption
+- `crates/snapfzz-seal-core/src/derive.rs` — HKDF key derivation
+- `crates/snapfzz-seal-core/src/signing.rs` — Ed25519 signature operations
+- `crates/snapfzz-seal-core/src/shamir.rs` — Secret sharing
+- `crates/snapfzz-seal-fingerprint/src/collect.rs` — Environment fingerprint collection
+- `crates/snapfzz-seal-launcher/src/protection/seccomp.rs` — seccomp BPF filter
+- Any file containing `unsafe` blocks
+- Either `build.rs` file — they embed `BUILD_ID`-derived markers into the binary; a change
+  here affects binary compatibility between `seal` and `seal-launcher`
 
-Changes to these areas require extra scrutiny:
+### Reporting vulnerabilities
 
-- Cryptographic operations (`crates/snapfzz-seal-core/src/crypto.rs`)
-- Key derivation (`crates/snapfzz-seal-core/src/derive.rs`)
-- Signature verification (`crates/snapfzz-seal-core/src/signing.rs`)
-- Fingerprinting (`crates/snapfzz-seal-fingerprint/src/collect.rs`)
-- Seccomp filters (`crates/snapfzz-seal-launcher/src/seccomp.rs`)
-- Memory handling (any `unsafe` code)
+Do not open public issues for security vulnerabilities. Contact maintainers through private
+channels on GitHub. Include a description of the vulnerability, reproduction steps, an
+assessment of potential impact, and a suggested fix if one is available.
 
-### Reporting Security Issues
+### General practices
 
-**Do not open public issues for security vulnerabilities.**
-
-Email security concerns to the maintainers privately. Include:
-
-- Description of the vulnerability
-- Steps to reproduce
-- Potential impact
-- Suggested fix (if available)
-
-**Note**: No dedicated security email address is currently configured. Contact maintainers through GitHub or other private channels.
-
-### Security Best Practices
-
-- Never commit secrets, keys, or credentials
-- Use `zeroize` for sensitive data in memory
-- Validate all external inputs
-- Prefer safe Rust over unsafe code
-- Consider timing attacks in cryptographic code
-- Document security assumptions and invariants
-
-## Getting Help
-
-- **Documentation** — Check `website/docs/` for guides and references
-- **Issues** — Search existing issues before opening new ones
-- **Discussions** — Use GitHub Discussions for questions
+- Never commit secrets, keys, or credentials of any kind.
+- Use constant-time comparisons wherever secret data is involved; the `subtle` crate is
+  already a workspace dependency for this purpose.
+- Validate all external inputs before use.
+- Document security assumptions and invariants in doc comments or inline comments adjacent
+  to the relevant code.
 
 ## License
 
-By contributing to Snapfzz Seal, you agree that your contributions will be licensed under the MIT License.
+By contributing to Snapfzz Seal, you agree that your contributions will be licensed under
+the MIT License.
