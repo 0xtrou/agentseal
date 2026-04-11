@@ -122,43 +122,52 @@ jobs:
           SNAPFZZ_SEAL_MODEL: ${{ secrets.SNAPFZZ_SEAL_MODEL }}
           SNAPFZZ_SEAL_MASTER_SECRET_HEX: ${{ secrets.SNAPFZZ_SEAL_MASTER_SECRET_HEX }}
         run: |
+          set -euo pipefail
           echo "=== PyInstaller Backend E2E Test ==="
-          
-          USER_FP=$(echo -n "pyinstaller-user-$(date +%s)" | sha256sum | cut -d' ' -f1)
-          SANDBOX_FP=$(echo -n "pyinstaller-sandbox-$(date +%s)" | sha256sum | cut -d' ' -f1)
-          
+
+          USER_FP=$(openssl rand -hex 32)
           echo "User FP: $USER_FP"
-          echo "Sandbox FP: $SANDBOX_FP"
-          
+          echo "Sandbox FP: auto (collected at compile time)"
+
           # Generate keys
           ./target/release/seal keygen --keys-dir /tmp/keys-pyinstaller
-          
-          # Compile
+
+          # Compile — sandbox-fingerprint=auto binds to this runner's environment
           ./target/release/seal compile \
             --project ./examples/chat_agent \
             --user-fingerprint "$USER_FP" \
-            --sandbox-fingerprint "$SANDBOX_FP" \
+            --sandbox-fingerprint auto \
             --output /tmp/agent-pyinstaller.sealed \
             --launcher ./target/release/seal-launcher \
             --backend pyinstaller \
             --mode batch
-          
+
           # Sign
           ./target/release/seal sign \
             --key /tmp/keys-pyinstaller/builder_secret.key \
             --binary /tmp/agent-pyinstaller.sealed
-          
-          # Verify
+
+          # Verify — must pass or the pipeline exits non-zero
           ./target/release/seal verify \
             --binary /tmp/agent-pyinstaller.sealed \
             --pubkey /tmp/keys-pyinstaller/builder_public.key
-          
-          # Launch
-          export AGENT_PROMPT="What is 2+3? Answer in one word."
-          chmod +x /tmp/agent-pyinstaller.sealed
-          timeout 30 /tmp/agent-pyinstaller.sealed --user-fingerprint "$USER_FP" || true
-          
-          echo "✓ PyInstaller E2E complete"
+
+          # Launch via seal (not direct execution) and check for hard failures
+          LAUNCH_OUT=$(AGENT_PROMPT="What is 2+3? Answer in one word." \
+            ./target/release/seal launch \
+              --payload /tmp/agent-pyinstaller.sealed \
+              --user-fingerprint "$USER_FP" 2>&1) && LAUNCH_EXIT=0 || LAUNCH_EXIT=$?
+
+          echo "--- Launch output ---"
+          echo "$LAUNCH_OUT"
+          echo "--- End output ---"
+
+          if echo "$LAUNCH_OUT" | grep -q "invalid signature"; then
+            echo "FAIL: invalid signature — binary integrity broken"
+            exit 1
+          fi
+
+          echo "✓ PyInstaller E2E complete (exit=$LAUNCH_EXIT)"
 
   e2e-nuitka:
     name: E2E - Nuitka
@@ -202,43 +211,52 @@ jobs:
           SNAPFZZ_SEAL_MODEL: ${{ secrets.SNAPFZZ_SEAL_MODEL }}
           SNAPFZZ_SEAL_MASTER_SECRET_HEX: ${{ secrets.SNAPFZZ_SEAL_MASTER_SECRET_HEX }}
         run: |
+          set -euo pipefail
           echo "=== Nuitka Backend E2E Test ==="
-          
-          USER_FP=$(echo -n "nuitka-user-$(date +%s)" | sha256sum | cut -d' ' -f1)
-          SANDBOX_FP=$(echo -n "nuitka-sandbox-$(date +%s)" | sha256sum | cut -d' ' -f1)
-          
+
+          USER_FP=$(openssl rand -hex 32)
           echo "User FP: $USER_FP"
-          echo "Sandbox FP: $SANDBOX_FP"
-          
+          echo "Sandbox FP: auto (collected at compile time)"
+
           # Generate keys
           ./target/release/seal keygen --keys-dir /tmp/keys-nuitka
-          
-          # Compile
+
+          # Compile — sandbox-fingerprint=auto binds to this runner's environment
           ./target/release/seal compile \
             --project ./examples/chat_agent \
             --user-fingerprint "$USER_FP" \
-            --sandbox-fingerprint "$SANDBOX_FP" \
+            --sandbox-fingerprint auto \
             --output /tmp/agent-nuitka.sealed \
             --launcher ./target/release/seal-launcher \
             --backend nuitka \
             --mode batch
-          
+
           # Sign
           ./target/release/seal sign \
             --key /tmp/keys-nuitka/builder_secret.key \
             --binary /tmp/agent-nuitka.sealed
-          
-          # Verify
+
+          # Verify — must pass or the pipeline exits non-zero
           ./target/release/seal verify \
             --binary /tmp/agent-nuitka.sealed \
             --pubkey /tmp/keys-nuitka/builder_public.key
-          
-          # Launch
-          export AGENT_PROMPT="What is 4+5? Answer in one word."
-          chmod +x /tmp/agent-nuitka.sealed
-          timeout 30 /tmp/agent-nuitka.sealed --user-fingerprint "$USER_FP" || true
-          
-          echo "✓ Nuitka E2E complete"
+
+          # Launch via seal (not direct execution) and check for hard failures
+          LAUNCH_OUT=$(AGENT_PROMPT="What is 4+5? Answer in one word." \
+            ./target/release/seal launch \
+              --payload /tmp/agent-nuitka.sealed \
+              --user-fingerprint "$USER_FP" 2>&1) && LAUNCH_EXIT=0 || LAUNCH_EXIT=$?
+
+          echo "--- Launch output ---"
+          echo "$LAUNCH_OUT"
+          echo "--- End output ---"
+
+          if echo "$LAUNCH_OUT" | grep -q "invalid signature"; then
+            echo "FAIL: invalid signature — binary integrity broken"
+            exit 1
+          fi
+
+          echo "✓ Nuitka E2E complete (exit=$LAUNCH_EXIT)"
 
   e2e-golang:
     name: E2E - Go
@@ -274,43 +292,52 @@ jobs:
           SNAPFZZ_SEAL_MODEL: ${{ secrets.SNAPFZZ_SEAL_MODEL }}
           SNAPFZZ_SEAL_MASTER_SECRET_HEX: ${{ secrets.SNAPFZZ_SEAL_MASTER_SECRET_HEX }}
         run: |
+          set -euo pipefail
           echo "=== Go Backend E2E Test ==="
-          
-          USER_FP=$(echo -n "go-user-$(date +%s)" | sha256sum | cut -d' ' -f1)
-          SANDBOX_FP=$(echo -n "go-sandbox-$(date +%s)" | sha256sum | cut -d' ' -f1)
-          
+
+          USER_FP=$(openssl rand -hex 32)
           echo "User FP: $USER_FP"
-          echo "Sandbox FP: $SANDBOX_FP"
-          
+          echo "Sandbox FP: auto (collected at compile time)"
+
           # Generate keys
           ./target/release/seal keygen --keys-dir /tmp/keys-go
-          
-          # Compile
+
+          # Compile — sandbox-fingerprint=auto binds to this runner's environment
           ./target/release/seal compile \
             --project ./examples/go_agent \
             --user-fingerprint "$USER_FP" \
-            --sandbox-fingerprint "$SANDBOX_FP" \
+            --sandbox-fingerprint auto \
             --output /tmp/agent-go.sealed \
             --launcher ./target/release/seal-launcher \
             --backend go \
             --mode batch
-          
+
           # Sign
           ./target/release/seal sign \
             --key /tmp/keys-go/builder_secret.key \
             --binary /tmp/agent-go.sealed
-          
-          # Verify
+
+          # Verify — must pass or the pipeline exits non-zero
           ./target/release/seal verify \
             --binary /tmp/agent-go.sealed \
             --pubkey /tmp/keys-go/builder_public.key
-          
-          # Launch
-          export AGENT_PROMPT="What is 6+7? Answer in one word."
-          chmod +x /tmp/agent-go.sealed
-          timeout 30 /tmp/agent-go.sealed --user-fingerprint "$USER_FP" || true
-          
-          echo "✓ Go E2E complete"
+
+          # Launch via seal (not direct execution) and check for hard failures
+          LAUNCH_OUT=$(AGENT_PROMPT="What is 6+7? Answer in one word." \
+            ./target/release/seal launch \
+              --payload /tmp/agent-go.sealed \
+              --user-fingerprint "$USER_FP" 2>&1) && LAUNCH_EXIT=0 || LAUNCH_EXIT=$?
+
+          echo "--- Launch output ---"
+          echo "$LAUNCH_OUT"
+          echo "--- End output ---"
+
+          if echo "$LAUNCH_OUT" | grep -q "invalid signature"; then
+            echo "FAIL: invalid signature — binary integrity broken"
+            exit 1
+          fi
+
+          echo "✓ Go E2E complete (exit=$LAUNCH_EXIT)"
 
   upload-artifacts:
     name: Upload Artifacts
