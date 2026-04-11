@@ -573,11 +573,6 @@ fn run_memfd_child<Ops: MemfdOps>(ops: &Ops, binary_data: &[u8], config: &ExecCo
         // }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = crate::seccomp::apply_seccomp_filter();
-    }
-
     let exec_result = (|| -> Result<(), SealError> {
         let fd = ops.create_memfd("snapfzz-seal-payload")?;
         for chunk in binary_data.chunks(65_536) {

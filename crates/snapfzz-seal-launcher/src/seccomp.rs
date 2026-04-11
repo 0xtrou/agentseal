@@ -7,6 +7,7 @@ use snapfzz_seal_core::error::SealError;
 use seccompiler::{BpfProgram, SeccompAction, SeccompFilter};
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     // I/O
     0,   // read
@@ -129,12 +130,13 @@ const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     115, // getgroups32
 ];
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub(crate) fn allowed_syscalls() -> &'static [i64] {
     ALLOWED_SYSCALLS_X86_64
 }
 
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
+#[allow(dead_code, unsafe_code)]
 pub(crate) fn build_seccomp_filter() -> Result<BpfProgram, SealError> {
     let _target_machine = nix::libc::EM_X86_64;
     let allowed: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = allowed_syscalls()
@@ -157,7 +159,7 @@ pub(crate) fn build_seccomp_filter() -> Result<BpfProgram, SealError> {
 }
 
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
+#[allow(dead_code, unsafe_code)]
 pub(crate) fn apply_seccomp_filter() -> Result<(), SealError> {
     let filter = build_seccomp_filter()?;
     seccompiler::apply_filter(&filter)

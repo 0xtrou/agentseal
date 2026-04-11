@@ -142,7 +142,7 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
             .map_err(|err| SealError::InvalidInput(err.to_string()))?,
     };
 
-    let stable_hash = canonicalize_stable(&snapshot);
+    let _stable_hash = canonicalize_stable(&snapshot);
 
     let user_fingerprint = decode_user_fingerprint(cli.user_fingerprint)?;
     let mut master_secret = load_master_secret(raw_for_integrity)?;
@@ -167,7 +167,7 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
     let decrypted = Zeroizing::new(
         match unpack_payload(Cursor::new(encrypted_payload), &decryption_key) {
             Ok((bytes, _header)) => bytes,
-            Err(SealError::DecryptionFailed(msg)) => {
+            Err(SealError::DecryptionFailed(_)) => {
                 eprintln!(
                     "ERROR: fingerprint mismatch — sandbox environment has changed, re-provisioning required"
                 );
@@ -292,6 +292,7 @@ pub fn format_user_error(err: &SealError) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn load_payload_bytes(payload_arg: Option<&str>) -> Result<Vec<u8>, SealError> {
     let binary_bytes = match payload_arg {
         Some(path) if !path.eq_ignore_ascii_case("self") => std::fs::read(path)?,

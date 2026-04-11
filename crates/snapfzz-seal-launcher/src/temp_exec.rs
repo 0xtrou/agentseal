@@ -140,6 +140,7 @@ impl TempFileExecutor {
         }
     }
 
+    #[allow(dead_code)]
     pub fn execute_interactive(
         &self,
         binary_data: &[u8],
@@ -494,11 +495,6 @@ fn run_temp_child_exec(temp_path: PathBuf, config: &ExecConfig) -> ! {
                 nix::libc::_exit(127);
             }
         }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = crate::seccomp::apply_seccomp_filter();
     }
 
     let exec_result = (|| -> Result<(), SealError> {
@@ -862,6 +858,7 @@ fn wait_for_child_exit(child_pid: Pid) -> Result<WaitStatus, SealError> {
     }
 }
 
+#[allow(dead_code)]
 fn heartbeat_timeout_from_env() -> Duration {
     std::env::var("SNAPFZZ_SEAL_INTERACTIVE_HEARTBEAT_SECS")
         .ok()
