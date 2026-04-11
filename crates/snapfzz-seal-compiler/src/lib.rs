@@ -3,7 +3,6 @@ pub mod backend;
 pub mod compile;
 pub mod decoys;
 pub mod embed;
-pub mod whitebox_embed;
 
 use clap::{Parser, ValueEnum};
 use snapfzz_seal_core::{error::SealError, secret::generate_master_secret, types::AgentMode};

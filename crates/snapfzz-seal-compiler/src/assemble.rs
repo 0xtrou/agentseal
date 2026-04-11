@@ -64,8 +64,6 @@ pub fn assemble(config: &AssembleConfig) -> Result<Vec<u8>, SealError> {
     tamper_hash.copy_from_slice(&Sha256::digest(&launcher_with_decoys));
     let launcher_with_tamper = embed_tamper_hash(&launcher_with_decoys, &tamper_hash)?;
 
-    // TODO: wire white-box AES into runtime decryption path
-
     let regions = find_integrity_regions(&launcher_with_tamper)?;
     let _launcher_integrity_hash = compute_binary_integrity_hash(&launcher_with_tamper, &regions)?;
 
