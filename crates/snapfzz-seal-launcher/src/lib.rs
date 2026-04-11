@@ -1,6 +1,5 @@
 #![allow(unsafe_code)]
 
-#[allow(dead_code)]
 mod anti_analysis;
 #[allow(dead_code)]
 mod anti_debug;

@@ -2,9 +2,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "ci-bypass"))]
 use std::arch::x86_64::__cpuid;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 use std::path::Path;
 
 const BREAKPOINT_OPCODE: u8 = 0xCC;
@@ -13,6 +13,7 @@ const DECOY_DATA: &[u8] = b"DECOY_DATA_DO_NOT_USE";
 const DECOY_MASTER_SECRET: &str =
     "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 const VM_KEYWORDS: &[&str] = &[
     "vmware",
     "virtualbox",
@@ -26,11 +27,14 @@ const VM_KEYWORDS: &[&str] = &[
     "innotek",
 ];
 
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 const VM_MAC_PREFIXES: &[&str] = &[
     "00:05:69", "00:0c:29", "00:1c:14", "00:50:56", "08:00:27", "52:54:00", "00:16:3e", "00:1c:42",
 ];
 
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 const VM_INTERFACE_NAMES: &[&str] = &["eth0", "ens3", "enp0s3", "ens18", "enp1s0"];
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 const VM_ARTIFACT_PATHS: &[&str] = &[
     "/sys/class/dmi/id/product_name",
     "/sys/class/dmi/id/board_vendor",
@@ -83,6 +87,8 @@ pub fn detect_debugger() -> bool {
     false
 }
 
+#[cfg(feature = "ci-bypass")]
+#[allow(dead_code)]
 pub fn detect_virtual_machine() -> bool {
     if check_cpuid_hypervisor() {
         tracing::debug!("vm detection hit cpuid hypervisor bit");
@@ -116,6 +122,8 @@ pub fn is_being_analyzed() -> bool {
     detect_debugger()
 }
 
+#[cfg(feature = "ci-bypass")]
+#[allow(dead_code)]
 pub fn is_vm_environment() -> bool {
     detect_virtual_machine()
 }
@@ -160,6 +168,7 @@ fn check_tracer_pid() -> bool {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn tracer_pid_from_status(status: &str) -> Option<u32> {
     status.lines().find_map(|line| {
         if !line.starts_with("TracerPid:") {
@@ -248,24 +257,24 @@ fn measure_loop_duration(iterations: u32) -> Duration {
     start.elapsed()
 }
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(all(target_arch = "x86_64", feature = "ci-bypass"))]
 fn check_cpuid_hypervisor() -> bool {
     let cpuid = __cpuid(1);
     (cpuid.ecx & (1 << 31)) != 0
 }
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(all(not(target_arch = "x86_64"), feature = "ci-bypass"))]
 fn check_cpuid_hypervisor() -> bool {
     false
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 fn check_vm_artifacts() -> bool {
     let paths: Vec<PathBuf> = VM_ARTIFACT_PATHS.iter().map(PathBuf::from).collect();
     check_vm_artifacts_in_paths(&paths)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 fn check_vm_artifacts_in_paths(paths: &[PathBuf]) -> bool {
     for path in paths {
         let Ok(content) = fs::read_to_string(path) else {
@@ -280,17 +289,18 @@ fn check_vm_artifacts_in_paths(paths: &[PathBuf]) -> bool {
     false
 }
 
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 fn contains_vm_keyword(content: &str) -> bool {
     let lowered = content.to_ascii_lowercase();
     VM_KEYWORDS.iter().any(|keyword| lowered.contains(keyword))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 fn check_vm_mac_address() -> bool {
     check_vm_mac_address_in_dir(VM_INTERFACE_NAMES, Path::new("/sys/class/net"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 fn check_vm_mac_address_in_dir(interface_names: &[&str], base_dir: &Path) -> bool {
     for interface in interface_names {
         let mac_path = base_dir.join(interface).join("address");
@@ -306,6 +316,7 @@ fn check_vm_mac_address_in_dir(interface_names: &[&str], base_dir: &Path) -> boo
     false
 }
 
+#[cfg(all(target_os = "linux", feature = "ci-bypass"))]
 fn is_vm_mac_prefix(mac: &str) -> bool {
     let normalized = mac.trim().to_ascii_lowercase();
     VM_MAC_PREFIXES
@@ -338,12 +349,14 @@ mod tests {
         assert_eq!(profile.max_multiplier, 50);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn tracer_pid_parser_extracts_non_zero_value() {
         let status = "Name:\ttest\nTracerPid:\t1234\nState:\tR\n";
         assert_eq!(tracer_pid_from_status(status), Some(1234));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn tracer_pid_parser_handles_missing_or_invalid_values() {
         assert_eq!(tracer_pid_from_status("Name:\ttest\n"), None);
@@ -388,6 +401,7 @@ mod tests {
         assert!(!timing_check_with_profile(&profile));
     }
 
+    #[cfg(all(target_os = "linux", feature = "ci-bypass"))]
     #[test]
     fn contains_vm_keyword_detects_hypervisor_strings() {
         assert!(contains_vm_keyword("VMware Virtual Platform"));
@@ -395,6 +409,7 @@ mod tests {
         assert!(!contains_vm_keyword("Dell Inc. Precision Workstation"));
     }
 
+    #[cfg(all(target_os = "linux", feature = "ci-bypass"))]
     #[test]
     fn vm_mac_prefix_check_detects_known_ouis() {
         assert!(is_vm_mac_prefix("08:00:27:aa:bb:cc\n"));
@@ -402,7 +417,7 @@ mod tests {
         assert!(!is_vm_mac_prefix("de:ad:be:ef:00:01"));
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "ci-bypass"))]
     #[test]
     fn vm_artifact_path_scan_matches_keywords() {
         let clean = unique_temp_path("vm-clean");
@@ -417,7 +432,7 @@ mod tests {
         let _ = fs::remove_file(vm);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "ci-bypass"))]
     #[test]
     fn vm_mac_dir_scan_matches_interface_prefixes() {
         let base = unique_temp_path("netfs");
@@ -479,6 +494,7 @@ mod tests {
         let _ = is_being_analyzed();
     }
 
+    #[cfg(feature = "ci-bypass")]
     #[test]
     fn is_vm_environment_is_callable_and_returns_bool() {
         let _ = is_vm_environment();
