@@ -7,13 +7,19 @@ pub struct Cli {
     pub binary: PathBuf,
     #[arg(long)]
     pub pubkey: Option<PathBuf>,
+    /// Allow unsigned binaries (e.g. for local dev builds). Exits 0 with a warning instead of 1.
+    #[arg(long)]
+    pub allow_unsigned: bool,
 }
 
 pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let binary = fs::read(&cli.binary)?;
     if binary.len() < 100 || &binary[binary.len() - 100..binary.len() - 96] != b"ASL\x02" {
-        println!("WARNING: unsigned");
-        return Ok(());
+        if cli.allow_unsigned {
+            eprintln!("WARNING: unsigned binary (--allow-unsigned passed, continuing)");
+            return Ok(());
+        }
+        return Err("unsigned binary: no ASL\\x02 signature marker found".into());
     }
     let data = &binary[..binary.len() - 100];
     let sig: [u8; 64] = binary[binary.len() - 96..binary.len() - 32].try_into()?;
@@ -30,10 +36,10 @@ pub fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         } else {
             println!("VALID (pinned to explicit public key)");
         }
+        Ok(())
     } else {
-        println!("INVALID");
+        Err("invalid signature: binary may have been tampered with".into())
     }
-    Ok(())
 }
 
 fn decode32(
@@ -68,8 +74,28 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_binary_returns_ok() {
+    fn unsigned_binary_returns_error() {
         let dir = tmp("verify-u");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("app.bin");
+        fs::write(&bin, b"plain").unwrap();
+        let err = run(Cli {
+            binary: bin,
+            pubkey: None,
+            allow_unsigned: false,
+        })
+        .expect_err("unsigned binary should fail");
+        assert!(
+            err.to_string().contains("unsigned"),
+            "error should mention 'unsigned', got: {err}"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unsigned_binary_with_allow_unsigned_returns_ok() {
+        let dir = tmp("verify-u-allow");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let bin = dir.join("app.bin");
@@ -77,7 +103,8 @@ mod tests {
         assert!(
             run(Cli {
                 binary: bin,
-                pubkey: None
+                pubkey: None,
+                allow_unsigned: true,
             })
             .is_ok()
         );
@@ -100,7 +127,8 @@ mod tests {
         assert!(
             run(Cli {
                 binary: bin,
-                pubkey: None
+                pubkey: None,
+                allow_unsigned: false,
             })
             .is_ok()
         );
@@ -130,6 +158,7 @@ mod tests {
             run(Cli {
                 binary: bin,
                 pubkey: Some(pubkey_path),
+                allow_unsigned: false,
             })
             .is_ok()
         );
@@ -138,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_binary_with_tampered_payload_reports_invalid_but_returns_ok() {
+    fn signed_binary_with_tampered_payload_returns_error() {
         let dir = tmp("verify-invalid-signature");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
@@ -153,12 +182,15 @@ mod tests {
         )
         .unwrap();
 
+        let err = run(Cli {
+            binary: bin,
+            pubkey: None,
+            allow_unsigned: false,
+        })
+        .expect_err("tampered binary should fail");
         assert!(
-            run(Cli {
-                binary: bin,
-                pubkey: None,
-            })
-            .is_ok()
+            err.to_string().contains("invalid signature"),
+            "error should mention 'invalid signature', got: {err}"
         );
 
         let _ = fs::remove_dir_all(dir);
@@ -186,6 +218,7 @@ mod tests {
         let err = run(Cli {
             binary: bin,
             pubkey: Some(bad_pubkey),
+            allow_unsigned: false,
         })
         .expect_err("short pubkey should fail");
 
