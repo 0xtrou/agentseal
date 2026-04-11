@@ -109,7 +109,11 @@ pub fn is_being_analyzed() -> bool {
     if std::env::var("SNAPFZZ_SEAL_SKIP_ANALYSIS_CHECK").is_ok() {
         return false;
     }
-    detect_debugger() || detect_virtual_machine()
+    detect_debugger()
+}
+
+pub fn is_vm_environment() -> bool {
+    detect_virtual_machine()
 }
 
 pub fn poison_environment() {
@@ -469,5 +473,10 @@ mod tests {
     #[ignore = "timing check runs 100k iterations which is slow on CI"]
     fn analysis_state_is_boolean_and_callable_on_all_platforms() {
         let _ = is_being_analyzed();
+    }
+
+    #[test]
+    fn is_vm_environment_is_callable_and_returns_bool() {
+        let _ = is_vm_environment();
     }
 }
