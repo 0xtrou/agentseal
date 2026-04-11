@@ -3,6 +3,12 @@ name = "snapfzz-seal-launcher"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Gate the plaintext env-var bypass so it is compiled out of release builds.
+# Only enable this feature when building for CI or local development where the
+# analysis-check bypass is needed.  Release binaries must never include it.
+ci-bypass = []
+
 [[bin]]
 name = "seal-launcher"
 path = "src/main.rs"

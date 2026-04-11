@@ -106,6 +106,10 @@ pub fn detect_virtual_machine() -> bool {
 }
 
 pub fn is_being_analyzed() -> bool {
+    // This bypass is compiled in ONLY when the `ci-bypass` feature is enabled.
+    // Release binaries built without that feature have zero bypass code paths,
+    // so the env-var name never appears in the binary's string table.
+    #[cfg(feature = "ci-bypass")]
     if std::env::var("SNAPFZZ_SEAL_SKIP_ANALYSIS_CHECK").is_ok() {
         return false;
     }
