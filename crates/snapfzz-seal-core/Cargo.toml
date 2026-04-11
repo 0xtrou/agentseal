@@ -15,7 +15,6 @@ hmac = "0.12"
 subtle = "2"
 aes-gcm = { workspace = true }
 aead = { workspace = true }
-aead-stream = { workspace = true }
 hkdf = { workspace = true }
 rand = { workspace = true }
 zeroize = { workspace = true }

@@ -1,50 +1,97 @@
+//! Streaming AES-256-GCM encryption using the STREAM-BE32 construction.
+//!
+//! The wire format is identical to what the `aead-stream` crate (0.6.0-rc.x)
+//! produced with `EncryptorBE32<Aes256Gcm>` / `DecryptorBE32<Aes256Gcm>`.
+//! That crate has no stable release; we reproduce the construction here using
+//! only stable `aes-gcm 0.10` and `aead 0.5` so that the codebase has no RC
+//! dependencies.
+//!
+//! # STREAM-BE32 nonce layout (per chunk)
+//!
+//! AES-GCM requires a 12-byte nonce.  STREAM-BE32 reserves the last 5 bytes
+//! for its own metadata, leaving 7 bytes for the user-supplied prefix:
+//!
+//! ```text
+//! [ prefix (7 bytes) | counter-BE32 (4 bytes) | last-block flag (1 byte) ]
+//! ```
+//!
+//! The counter starts at 0 and is incremented for every chunk.  The last-block
+//! flag is `0x00` for non-final chunks and `0x01` for the final chunk.
+
 use crate::{constants::CHUNK_SIZE, error::SealError};
-use aead_stream::{DecryptorBE32, EncryptorBE32, Key, Nonce};
-use aes_gcm::Aes256Gcm;
+use aead::{AeadInPlace, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use rand::{RngCore, rngs::OsRng};
 use std::io::Read;
 use zeroize::Zeroize;
 
+/// Number of bytes in the user-supplied stream nonce prefix.
+///
+/// AES-GCM nonce = 12 bytes; STREAM-BE32 overhead = 5 bytes (4 counter + 1 flag).
 const STREAM_NONCE_SIZE: usize = 7;
 const TAG_SIZE: usize = 16;
 const ENCRYPTED_CHUNK_SIZE: usize = CHUNK_SIZE + TAG_SIZE;
+
+/// Build the 12-byte AES-GCM nonce for a single STREAM-BE32 chunk.
+fn chunk_nonce(prefix: &[u8; STREAM_NONCE_SIZE], counter: u32, last: bool) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[..7].copy_from_slice(prefix);
+    nonce[7..11].copy_from_slice(&counter.to_be_bytes());
+    nonce[11] = last as u8;
+    nonce
+}
 
 pub fn encrypt_stream(mut plaintext: impl Read, key: &[u8; 32]) -> Result<Vec<u8>, SealError> {
     let mut key_copy = *key;
     let mut stream_nonce = [0_u8; STREAM_NONCE_SIZE];
     OsRng.fill_bytes(&mut stream_nonce);
 
-    let key_array = Key::<Aes256Gcm>::from(key_copy);
-    let nonce_array = Nonce::<Aes256Gcm, aead_stream::StreamBE32<Aes256Gcm>>::from(stream_nonce);
-    let mut encryptor = EncryptorBE32::<Aes256Gcm>::new(&key_array, &nonce_array);
+    let cipher = Aes256Gcm::new_from_slice(&key_copy)
+        .map_err(|err| SealError::EncryptionFailed(err.to_string()))?;
 
     let mut output = Vec::with_capacity(STREAM_NONCE_SIZE);
     output.extend_from_slice(&stream_nonce);
 
     let first_chunk = read_chunk(&mut plaintext, CHUNK_SIZE)?;
+    let mut counter: u32 = 0;
+
     match first_chunk {
         None => {
-            let empty: &[u8] = &[];
-            let encrypted = encryptor
-                .encrypt_last(empty)
+            // Empty plaintext: emit a single last-block chunk with empty payload.
+            let nonce_bytes = chunk_nonce(&stream_nonce, counter, true);
+            let nonce = Nonce::from(nonce_bytes);
+            let mut buf: Vec<u8> = Vec::new();
+            cipher
+                .encrypt_in_place(&nonce, b"", &mut buf)
                 .map_err(|err| SealError::EncryptionFailed(err.to_string()))?;
-            output.extend_from_slice(&encrypted);
+            output.extend_from_slice(&buf);
         }
         Some(mut current) => loop {
             match read_chunk(&mut plaintext, CHUNK_SIZE)? {
                 Some(next) => {
-                    let encrypted = encryptor
-                        .encrypt_next(current.as_slice())
+                    // Non-final chunk.
+                    let nonce_bytes = chunk_nonce(&stream_nonce, counter, false);
+                    let nonce = Nonce::from(nonce_bytes);
+                    let mut buf = current.clone();
+                    cipher
+                        .encrypt_in_place(&nonce, b"", &mut buf)
                         .map_err(|err| SealError::EncryptionFailed(err.to_string()))?;
-                    output.extend_from_slice(&encrypted);
+                    output.extend_from_slice(&buf);
                     current.zeroize();
                     current = next;
+                    counter = counter
+                        .checked_add(1)
+                        .ok_or_else(|| SealError::EncryptionFailed("counter overflow".into()))?;
                 }
                 None => {
-                    let encrypted = encryptor
-                        .encrypt_last(current.as_slice())
+                    // Final chunk.
+                    let nonce_bytes = chunk_nonce(&stream_nonce, counter, true);
+                    let nonce = Nonce::from(nonce_bytes);
+                    let mut buf = current.clone();
+                    cipher
+                        .encrypt_in_place(&nonce, b"", &mut buf)
                         .map_err(|err| SealError::EncryptionFailed(err.to_string()))?;
-                    output.extend_from_slice(&encrypted);
+                    output.extend_from_slice(&buf);
                     current.zeroize();
                     break;
                 }
@@ -64,10 +111,11 @@ pub fn decrypt_stream(mut ciphertext: impl Read, key: &[u8; 32]) -> Result<Vec<u
         .read_exact(&mut stream_nonce)
         .map_err(|err| SealError::DecryptionFailed(format!("failed to read nonce: {err}")))?;
 
-    let key_array = Key::<Aes256Gcm>::from(key_copy);
-    let nonce_array = Nonce::<Aes256Gcm, aead_stream::StreamBE32<Aes256Gcm>>::from(stream_nonce);
-    let mut decryptor = DecryptorBE32::<Aes256Gcm>::new(&key_array, &nonce_array);
+    let cipher = Aes256Gcm::new_from_slice(&key_copy)
+        .map_err(|err| SealError::DecryptionFailed(err.to_string()))?;
+
     let mut output = Vec::new();
+    let mut counter: u32 = 0;
 
     let first_segment = read_chunk(&mut ciphertext, ENCRYPTED_CHUNK_SIZE)?;
     let mut current = first_segment.ok_or_else(|| {
@@ -84,18 +132,29 @@ pub fn decrypt_stream(mut ciphertext: impl Read, key: &[u8; 32]) -> Result<Vec<u
                     ));
                 }
 
-                let decrypted = decryptor
-                    .decrypt_next(current.as_slice())
+                // Non-final chunk.
+                let nonce_bytes = chunk_nonce(&stream_nonce, counter, false);
+                let nonce = Nonce::from(nonce_bytes);
+                let mut buf = current.clone();
+                cipher
+                    .decrypt_in_place(&nonce, b"", &mut buf)
                     .map_err(|err| SealError::DecryptionFailed(err.to_string()))?;
-                output.extend_from_slice(&decrypted);
+                output.extend_from_slice(&buf);
                 current.zeroize();
                 current = next;
+                counter = counter
+                    .checked_add(1)
+                    .ok_or_else(|| SealError::DecryptionFailed("counter overflow".into()))?;
             }
             None => {
-                let decrypted = decryptor
-                    .decrypt_last(current.as_slice())
+                // Final chunk.
+                let nonce_bytes = chunk_nonce(&stream_nonce, counter, true);
+                let nonce = Nonce::from(nonce_bytes);
+                let mut buf = current.clone();
+                cipher
+                    .decrypt_in_place(&nonce, b"", &mut buf)
                     .map_err(|err| SealError::DecryptionFailed(err.to_string()))?;
-                output.extend_from_slice(&decrypted);
+                output.extend_from_slice(&buf);
                 current.zeroize();
                 break;
             }
