@@ -1,6 +1,6 @@
 use crate::decoys::embed_decoy_secrets;
 use crate::embed::{embed_master_secret, embed_tamper_hash};
-use crate::whitebox_embed::{embed_whitebox_tables, generate_whitebox_tables};
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use snapfzz_seal_core::{
     derive::derive_env_key,
@@ -13,6 +13,8 @@ use snapfzz_seal_core::{
     types::{AgentMode, BackendType, LAUNCHER_PAYLOAD_SENTINEL, PayloadFooter},
 };
 use std::{io::Cursor, path::PathBuf};
+
+type HmacSha256 = Hmac<Sha256>;
 
 pub struct AssembleConfig {
     pub agent_elf_path: PathBuf,
@@ -45,20 +47,29 @@ pub fn assemble(config: &AssembleConfig) -> Result<Vec<u8>, SealError> {
 
     let launcher_with_secret = embed_master_secret(&launcher_bytes, &config.master_secret)?;
 
-    let launcher_with_decoys = embed_decoy_secrets(&launcher_with_secret, 0)?;
+    // Derive the decoy slot index from the master secret so it is not
+    // statically predictable (fixes hardcoded seed=0 security issue).
+    let decoy_seed: u64 = {
+        let mut mac =
+            HmacSha256::new_from_slice(&config.master_secret).expect("HMAC accepts any key length");
+        mac.update(b"decoy-seed");
+        let result = mac.finalize().into_bytes();
+        u64::from_le_bytes(result[..8].try_into().expect("slice is 8 bytes"))
+    };
+    // Map the seed into a valid slot index (0..=DECOY_SETS where DECOY_SETS=10).
+    let decoy_index = (decoy_seed % 11) as usize;
+    let launcher_with_decoys = embed_decoy_secrets(&launcher_with_secret, decoy_index)?;
 
     let mut tamper_hash = [0_u8; 32];
     tamper_hash.copy_from_slice(&Sha256::digest(&launcher_with_decoys));
     let launcher_with_tamper = embed_tamper_hash(&launcher_with_decoys, &tamper_hash)?;
 
-    let whitebox_tables = generate_whitebox_tables(&config.master_secret);
-    let launcher_with_whitebox = embed_whitebox_tables(&launcher_with_tamper, &whitebox_tables)?;
+    // TODO: wire white-box AES into runtime decryption path
 
-    let regions = find_integrity_regions(&launcher_with_whitebox)?;
-    let _launcher_integrity_hash =
-        compute_binary_integrity_hash(&launcher_with_whitebox, &regions)?;
+    let regions = find_integrity_regions(&launcher_with_tamper)?;
+    let _launcher_integrity_hash = compute_binary_integrity_hash(&launcher_with_tamper, &regions)?;
 
-    let integrity_key = derive_key_with_integrity_from_binary(&env_key, &launcher_with_whitebox)?;
+    let integrity_key = derive_key_with_integrity_from_binary(&env_key, &launcher_with_tamper)?;
 
     let encrypted_payload =
         pack_payload_with_mode(Cursor::new(&agent_elf_bytes), &integrity_key, config.mode)?;
@@ -66,8 +77,8 @@ pub fn assemble(config: &AssembleConfig) -> Result<Vec<u8>, SealError> {
     let mut original_hash = [0_u8; 32];
     original_hash.copy_from_slice(&Sha256::digest(&agent_elf_bytes));
 
-    let regions = find_integrity_regions(&launcher_with_whitebox)?;
-    let launcher_hash = compute_binary_integrity_hash(&launcher_with_whitebox, &regions)?;
+    let regions = find_integrity_regions(&launcher_with_tamper)?;
+    let launcher_hash = compute_binary_integrity_hash(&launcher_with_tamper, &regions)?;
 
     let backend_type = backend_type_from_name(&config.backend_name);
 
@@ -79,12 +90,12 @@ pub fn assemble(config: &AssembleConfig) -> Result<Vec<u8>, SealError> {
     let footer_bytes = write_footer(&footer);
 
     let mut assembled = Vec::with_capacity(
-        launcher_with_whitebox.len()
+        launcher_with_tamper.len()
             + LAUNCHER_PAYLOAD_SENTINEL.len()
             + encrypted_payload.len()
             + footer_bytes.len(),
     );
-    assembled.extend_from_slice(&launcher_with_whitebox);
+    assembled.extend_from_slice(&launcher_with_tamper);
     assembled.extend_from_slice(LAUNCHER_PAYLOAD_SENTINEL);
     assembled.extend_from_slice(&encrypted_payload);
     assembled.extend_from_slice(&footer_bytes);
