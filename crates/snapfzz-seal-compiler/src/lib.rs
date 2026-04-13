@@ -61,17 +61,32 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
     let launcher_path = resolve_launcher_path(cli.launcher)?;
 
     let user_fingerprint = parse_hex_32(&cli.user_fingerprint, "user fingerprint")?;
+
+    // Generate master_secret first so we can derive the same fp_hmac_key the
+    // launcher uses — ensuring auto-collected fingerprints match at launch time.
+    let master_secret = generate_master_secret();
+
     let stable_fingerprint_hash = if cli.sandbox_fingerprint == "auto" {
-        let collector = FingerprintCollector::new();
+        // Derive the per-build HMAC key the same way the launcher does so that
+        // the fingerprint hash produced here equals the one computed at runtime.
+        let fp_hmac_key = {
+            use hkdf::Hkdf;
+            let hk = Hkdf::<sha2::Sha256>::new(None, &master_secret);
+            let mut okm = [0u8; 32];
+            hk.expand(b"snapfzz-seal/fingerprint-hmac-key/v1", &mut okm)
+                .expect("valid length");
+            okm
+        };
+        let collector = FingerprintCollector::with_app_key(fp_hmac_key);
         let snapshot = collector.collect_stable_only().map_err(|e| {
             SealError::InvalidInput(format!("failed to collect sandbox fingerprint: {}", e))
         })?;
-        canonicalize_stable(&snapshot)
+        let hash = canonicalize_stable(&snapshot);
+        eprintln!("[compile] stable_fingerprint_hash={}", hex::encode(hash));
+        hash
     } else {
         parse_hex_32(&cli.sandbox_fingerprint, "sandbox fingerprint")?
     };
-
-    let master_secret = generate_master_secret();
     let output_parent = cli
         .output
         .parent()

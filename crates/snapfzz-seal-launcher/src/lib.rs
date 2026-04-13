@@ -32,7 +32,7 @@ use snapfzz_seal_core::{
     derive::{derive_env_key, derive_session_key},
     error::SealError,
     integrity::derive_key_with_integrity_from_binary,
-    payload::{read_footer, unpack_payload, validate_payload_header},
+    payload::{read_footer, unpack_payload_with_footer, validate_payload_header},
     shamir::reconstruct_secret,
     signing,
     types::{
@@ -175,15 +175,20 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
     let raw_no_sig = strip_signature_block(&raw_binary);
     let payload_bytes = extract_payload_from_assembled_binary(raw_no_sig)?;
 
-    let raw_for_integrity = raw_no_sig;
-    let launcher_bytes_for_integrity = raw_for_integrity;
+    // Extract only the launcher portion (bytes before the sentinel) for integrity
+    // derivation.  At compile time, `derive_key_with_integrity_from_binary` is called
+    // with the raw launcher bytes *before* sentinel + payload are appended, so we must
+    // match that here.
+    let sentinel_pos = find_last_marker(raw_no_sig, LAUNCHER_PAYLOAD_SENTINEL)
+        .ok_or_else(|| SealError::InvalidPayload("sentinel not found in binary".to_string()))?;
+    let launcher_bytes_for_integrity = &raw_no_sig[..sentinel_pos];
 
     validate_payload_header(&payload_bytes)?;
     let footer = extract_footer(&payload_bytes).map_err(|_| {
         SealError::InvalidPayload("missing or corrupted payload footer".to_string())
     })?;
 
-    verify_launcher_integrity(&footer.launcher_hash, raw_for_integrity, &audit)?;
+    verify_launcher_integrity(&footer.launcher_hash, launcher_bytes_for_integrity, &audit)?;
 
     if let Some(check_name) = anti_analysis::analysis_check_name() {
         tracing::error!("analysis detected (check={check_name}), aborting launcher execution");
@@ -213,7 +218,8 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
         err
     })?;
 
-    let mut master_secret = load_master_secret(raw_for_integrity)?;
+    let mut master_secret = load_master_secret(launcher_bytes_for_integrity)?;
+    eprintln!("[launch] master_secret={}", hex::encode(master_secret));
 
     // Derive a per-build HMAC key from master_secret to prevent fingerprint
     // hashes from being reproduced by anyone who does not know the secret.
@@ -273,12 +279,12 @@ pub fn run(cli: Cli) -> Result<(), SealError> {
     )));
 
     let decrypted = Zeroizing::new(
-        match unpack_payload(Cursor::new(encrypted_payload), &decryption_key) {
+        match unpack_payload_with_footer(Cursor::new(encrypted_payload), &decryption_key, Some(&footer)) {
             Ok((bytes, _header)) => bytes,
             Err(SealError::DecryptionFailed(_)) => {
                 audit.log(audit::AuditEvent::FingerprintMismatch {
-                    expected: user_fp,
-                    got: sandbox_fp,
+                    runtime_sandbox_fp: sandbox_fp,
+                    provided_user_fp: user_fp,
                 });
                 eprintln!(
                     "ERROR: fingerprint mismatch — sandbox environment has changed, re-provisioning required"

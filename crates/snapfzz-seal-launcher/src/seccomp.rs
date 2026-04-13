@@ -6,8 +6,9 @@ use snapfzz_seal_core::error::SealError;
 #[cfg(target_os = "linux")]
 use seccompiler::{BpfProgram, SeccompAction, SeccompFilter};
 
-#[cfg(target_os = "linux")]
-const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
+// ── x86_64 syscall allowlist ──────────────────────────────────────────────────
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const ALLOWED_SYSCALLS: &[i64] = &[
     // ── Basic I/O ──────────────────────────────────────────────────────────────
     0,  // read
     1,  // write
@@ -165,26 +166,229 @@ const ALLOWED_SYSCALLS_X86_64: &[i64] = &[
     // ── Memory-file / PyInstaller ──────────────────────────────────────────────
     356, // memfd_create (critical for PyInstaller onefile extraction)
 ];
+
+// ── aarch64 syscall allowlist ─────────────────────────────────────────────────
+// aarch64 has a unified syscall table (asm-generic) with different numbers from
+// x86_64.  Many legacy syscalls (open, fork, pipe, stat, access, ...) are absent
+// and replaced by their *at / *2 variants.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const ALLOWED_SYSCALLS: &[i64] = &[
+    // ── Basic I/O ──────────────────────────────────────────────────────────────
+    63,  // read
+    64,  // write
+    57,  // close
+    65,  // readv
+    66,  // writev
+    67,  // pread64
+    68,  // pwrite64
+    69,  // preadv
+    70,  // pwritev
+    286, // preadv2
+    287, // pwritev2
+    // ── File system ────────────────────────────────────────────────────────────
+    56,  // openat   (aarch64 has no plain open(2))
+    79,  // newfstatat  (covers stat/lstat/fstatat)
+    80,  // fstat
+    62,  // lseek
+    48,  // faccessat   (covers access(2))
+    439, // faccessat2
+    23,  // dup
+    24,  // dup3        (covers dup2)
+    82,  // fsync
+    83,  // fdatasync
+    45,  // truncate
+    46,  // ftruncate
+    61,  // getdents64
+    17,  // getcwd
+    49,  // chdir
+    50,  // fchdir
+    38,  // renameat
+    276, // renameat2
+    34,  // mkdirat     (covers mkdir)
+    33,  // mknodat
+    35,  // unlinkat    (covers unlink + rmdir with AT_REMOVEDIR)
+    78,  // readlinkat
+    53,  // fchmodat    (covers chmod)
+    52,  // fchmod
+    166, // umask
+    51,  // chroot
+    54,  // fchownat
+    37,  // linkat
+    36,  // symlinkat
+    291, // statx
+    32,  // flock
+    43,  // statfs
+    44,  // fstatfs
+    88,  // utimensat
+    // ── Memory management ──────────────────────────────────────────────────────
+    222, // mmap
+    226, // mprotect
+    215, // munmap
+    214, // brk
+    216, // mremap
+    232, // mincore
+    233, // madvise
+    227, // msync
+    228, // mlock
+    229, // munlock
+    230, // mlockall
+    231, // munlockall
+    284, // mlock2
+    283, // membarrier  (Go uses this for GC write barriers)
+    // ── Process / thread lifecycle ─────────────────────────────────────────────
+    172, // getpid
+    220, // clone       (covers fork + vfork + thread creation)
+    435, // clone3
+    221, // execve
+    281, // execveat    (fexecve / memfd execution — CRITICAL)
+    93,  // exit
+    94,  // exit_group
+    260, // wait4
+    95,  // waitid
+    178, // gettid
+    173, // getppid
+    154, // setpgid
+    155, // getpgid     (covers getpgrp)
+    157, // setsid
+    156, // getsid
+    96,  // set_tid_address
+    99,  // set_robust_list
+    100, // get_robust_list
+    97,  // unshare
+    // ── Credentials / capabilities ─────────────────────────────────────────────
+    174, // getuid
+    176, // getgid
+    146, // setuid
+    144, // setgid
+    175, // geteuid
+    177, // getegid
+    158, // getgroups
+    159, // setgroups
+    148, // getresuid
+    150, // getresgid
+    90,  // capget
+    91,  // capset
+    163, // getrlimit
+    164, // setrlimit
+    261, // prlimit64
+    165, // getrusage
+    // ── Scheduling ─────────────────────────────────────────────────────────────
+    124, // sched_yield
+    122, // sched_setaffinity
+    123, // sched_getaffinity
+    119, // sched_setscheduler
+    120, // sched_getscheduler
+    118, // sched_setparam
+    121, // sched_getparam
+    125, // sched_get_priority_max
+    126, // sched_get_priority_min
+    127, // sched_rr_get_interval
+    141, // getpriority
+    140, // setpriority
+    // ── Synchronization / futex ────────────────────────────────────────────────
+    98,  // futex
+    // ── Signals ────────────────────────────────────────────────────────────────
+    134, // rt_sigaction
+    135, // rt_sigprocmask
+    139, // rt_sigreturn
+    133, // rt_sigsuspend
+    136, // rt_sigpending
+    137, // rt_sigtimedwait
+    132, // sigaltstack
+    129, // kill
+    130, // tkill
+    131, // tgkill
+    // ── Time ───────────────────────────────────────────────────────────────────
+    101, // nanosleep
+    113, // clock_gettime
+    114, // clock_getres
+    115, // clock_nanosleep
+    169, // gettimeofday
+    107, // timer_create
+    109, // timer_getoverrun
+    110, // timer_settime
+    111, // timer_delete
+    85,  // timerfd_create
+    86,  // timerfd_settime
+    87,  // timerfd_gettime
+    // ── Polling / event notification ───────────────────────────────────────────
+    72,  // pselect6    (covers select(2))
+    73,  // ppoll       (covers poll(2))
+    20,  // epoll_create1
+    21,  // epoll_ctl
+    22,  // epoll_pwait
+    441, // epoll_pwait2
+    19,  // eventfd2
+    26,  // inotify_init1
+    27,  // inotify_add_watch
+    28,  // inotify_rm_watch
+    74,  // signalfd4
+    // ── Pipes / IPC ────────────────────────────────────────────────────────────
+    59,  // pipe2       (aarch64 has no plain pipe(2))
+    25,  // fcntl
+    29,  // ioctl
+    // ── Networking ─────────────────────────────────────────────────────────────
+    198, // socket
+    199, // socketpair
+    200, // bind
+    201, // listen
+    202, // accept
+    242, // accept4
+    203, // connect
+    204, // getsockname
+    205, // getpeername
+    206, // sendto
+    207, // recvfrom
+    208, // setsockopt
+    209, // getsockopt
+    210, // shutdown
+    211, // sendmsg
+    212, // recvmsg
+    243, // recvmmsg    (Go batch network I/O)
+    269, // sendmmsg    (Go batch network I/O)
+    // ── System information ──────────────────────────────────────────────────────
+    160, // uname
+    179, // sysinfo
+    167, // prctl
+    168, // getcpu
+    153, // times
+    // ── Entropy / security ─────────────────────────────────────────────────────
+    278, // getrandom
+    277, // seccomp     (Python 3.x sandboxes sub-processes)
+    // ── I/O splice / sendfile ──────────────────────────────────────────────────
+    71,  // sendfile
+    76,  // splice
+    77,  // tee
+    // ── File descriptor management ─────────────────────────────────────────────
+    436, // close_range
+    // ── Memory-file / PyInstaller ──────────────────────────────────────────────
+    279, // memfd_create (critical for PyInstaller onefile extraction)
+];
+
 #[cfg(target_os = "linux")]
 pub(crate) fn allowed_syscalls() -> &'static [i64] {
-    ALLOWED_SYSCALLS_X86_64
+    ALLOWED_SYSCALLS
 }
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 pub(crate) fn build_seccomp_filter() -> Result<BpfProgram, SealError> {
-    let _target_machine = nix::libc::EM_X86_64;
     let allowed: BTreeMap<i64, Vec<seccompiler::SeccompRule>> = allowed_syscalls()
         .iter()
         .copied()
         .map(|syscall_nr| (syscall_nr, Vec::new()))
         .collect();
 
+    #[cfg(target_arch = "x86_64")]
+    let target_arch = seccompiler::TargetArch::x86_64;
+    #[cfg(target_arch = "aarch64")]
+    let target_arch = seccompiler::TargetArch::aarch64;
+
     let filter = SeccompFilter::new(
         allowed,
         SeccompAction::Errno(nix::libc::EPERM as u32),
         SeccompAction::Allow,
-        seccompiler::TargetArch::x86_64,
+        target_arch,
     )
     .map_err(|err| SealError::InvalidInput(format!("failed to construct seccomp filter: {err}")))?;
 
@@ -225,7 +429,7 @@ mod tests {
         assert!(build_seccomp_filter().is_ok());
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[test]
     fn allowlist_contains_expected_syscall_numbers() {
         let allowed = allowed_syscalls();
@@ -338,6 +542,125 @@ mod tests {
             assert!(
                 allowed.contains(&syscall_nr),
                 "missing Python syscall {syscall_nr}"
+            );
+        }
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[test]
+    fn allowlist_contains_expected_syscall_numbers() {
+        let allowed = allowed_syscalls();
+        // Core I/O
+        for syscall_nr in [
+            63_i64, // read
+            64,     // write
+            57,     // close
+            65,     // readv
+            66,     // writev
+            67,     // pread64
+            68,     // pwrite64
+        ] {
+            assert!(
+                allowed.contains(&syscall_nr),
+                "missing core I/O syscall {syscall_nr}"
+            );
+        }
+        // File system
+        for syscall_nr in [
+            56_i64, // openat
+            79,     // newfstatat
+            80,     // fstat
+            62,     // lseek
+            61,     // getdents64
+            17,     // getcwd
+            35,     // unlinkat
+            78,     // readlinkat
+            32,     // flock
+            291,    // statx
+        ] {
+            assert!(
+                allowed.contains(&syscall_nr),
+                "missing file syscall {syscall_nr}"
+            );
+        }
+        // Memory management
+        for syscall_nr in [
+            222_i64, // mmap
+            226,     // mprotect
+            215,     // munmap
+            214,     // brk
+            233,     // madvise
+        ] {
+            assert!(
+                allowed.contains(&syscall_nr),
+                "missing memory syscall {syscall_nr}"
+            );
+        }
+        // Process / thread
+        for syscall_nr in [
+            172_i64, // getpid
+            220,     // clone
+            435,     // clone3
+            221,     // execve
+            281,     // execveat
+            93,      // exit
+            94,      // exit_group
+            260,     // wait4
+            95,      // waitid
+            178,     // gettid
+            96,      // set_tid_address
+            99,      // set_robust_list
+        ] {
+            assert!(
+                allowed.contains(&syscall_nr),
+                "missing process syscall {syscall_nr}"
+            );
+        }
+        // Signals
+        for syscall_nr in [
+            134_i64, // rt_sigaction
+            135,     // rt_sigprocmask
+            139,     // rt_sigreturn
+            132,     // sigaltstack
+            129,     // kill
+            131,     // tgkill
+        ] {
+            assert!(
+                allowed.contains(&syscall_nr),
+                "missing signal syscall {syscall_nr}"
+            );
+        }
+        // Networking
+        for syscall_nr in [
+            198_i64, // socket
+            203,     // connect
+            206,     // sendto
+            207,     // recvfrom
+            211,     // sendmsg
+            212,     // recvmsg
+            200,     // bind
+            201,     // listen
+            202,     // accept
+        ] {
+            assert!(
+                allowed.contains(&syscall_nr),
+                "missing network syscall {syscall_nr}"
+            );
+        }
+        // Key extras
+        for syscall_nr in [
+            98_i64, // futex
+            278,    // getrandom
+            279,    // memfd_create
+            277,    // seccomp
+            113,    // clock_gettime
+            101,    // nanosleep
+            59,     // pipe2
+            25,     // fcntl
+        ] {
+            assert!(
+                allowed.contains(&syscall_nr),
+                "missing extra syscall {syscall_nr}"
             );
         }
     }

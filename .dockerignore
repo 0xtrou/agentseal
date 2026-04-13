@@ -1,0 +1,6 @@
+target/
+.claude/
+.git/
+*.sealed
+*.key
+/tmp/

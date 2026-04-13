@@ -46,7 +46,7 @@ pub enum AuditEvent {
     /// Sandbox fingerprint matched the expected fingerprint.
     FingerprintMatched { sandbox_fp: String, user_fp: String },
     /// Sandbox fingerprint did not match; decryption will fail.
-    FingerprintMismatch { expected: String, got: String },
+    FingerprintMismatch { runtime_sandbox_fp: String, provided_user_fp: String },
     /// An anti-analysis check triggered; `check` names the specific detector.
     AnalysisDetected { check: String },
     /// Launcher self-integrity hash matched the expected value.
@@ -403,8 +403,8 @@ mod tests {
                 user_fp: "fp2".into(),
             },
             AuditEvent::FingerprintMismatch {
-                expected: "exp".into(),
-                got: "got".into(),
+                runtime_sandbox_fp: "exp".into(),
+                provided_user_fp: "got".into(),
             },
             AuditEvent::AnalysisDetected {
                 check: "ptrace".into(),

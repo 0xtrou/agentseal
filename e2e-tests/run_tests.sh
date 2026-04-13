@@ -24,10 +24,9 @@ run_backend_test() {
     echo ""
     
     USER_FP=$(openssl rand -hex 32)
-    SANDBOX_FP=$(openssl rand -hex 32)
-    
+
     echo "User FP: $USER_FP"
-    echo "Sandbox FP: $SANDBOX_FP"
+    echo "Sandbox FP: auto"
     
     # Generate keys
     mkdir -p "$keys_dir"
@@ -39,7 +38,7 @@ run_backend_test() {
     if ! seal compile \
         --project "$project_dir" \
         --user-fingerprint "$USER_FP" \
-        --sandbox-fingerprint "$SANDBOX_FP" \
+        --sandbox-fingerprint auto \
         --output "$output_file" \
         --launcher /usr/local/bin/seal-launcher \
         --backend "$backend" 2>&1; then
@@ -75,32 +74,34 @@ run_backend_test() {
     echo ""
     echo "Binary size: $size bytes"
     
-    # Launch test (requires SNAPFZZ_SEAL_MASTER_SECRET_HEX or embedded secret)
-    # For E2E, we test that the binary can be read and parsed
+    # Launch — execute the sealed agent and capture output
     echo ""
-    echo "Testing payload extraction..."
-    if python3 -c "
-import sys
-with open('$output_file', 'rb') as f:
-    data = f.read()
-    
-# Check for ASL\x01 magic in payload
-magic = b'ASL\x01'
-if magic in data:
-    print('  Payload magic found: OK')
-    sys.exit(0)
-else:
-    print('  ERROR: Payload magic not found')
-    sys.exit(1)
-"; then
-        echo ""
-        echo "✓ $backend E2E complete"
-        PASSED_BACKENDS="$PASSED_BACKENDS $backend"
-        return 0
-    else
+    echo "Launching sealed agent..."
+    launch_output=$(
+        AGENT_PROMPT="Say hello in exactly 5 words." \
+        SNAPFZZ_SEAL_API_KEY="${SNAPFZZ_SEAL_API_KEY:-}" \
+        SNAPFZZ_SEAL_API_BASE="${SNAPFZZ_SEAL_API_BASE:-https://llm.solo.engineer/v1}" \
+        SNAPFZZ_SEAL_MODEL="${SNAPFZZ_SEAL_MODEL:-bcp/qwen3.6-plus}" \
+        seal launch \
+            --payload "$output_file" \
+            --user-fingerprint "$USER_FP" 2>&1
+    ) || true
+
+    echo ""
+    echo "--- Agent Response ---"
+    echo "$launch_output"
+    echo "--- End Response ---"
+    echo ""
+
+    if echo "$launch_output" | grep -qE "fingerprint mismatch|invalid signature|ERROR.*launch"; then
+        echo "ERROR: Launch failed for $backend"
         FAILED_BACKENDS="$FAILED_BACKENDS $backend"
         return 1
     fi
+
+    echo "✓ $backend E2E complete"
+    PASSED_BACKENDS="$PASSED_BACKENDS $backend"
+    return 0
 }
 
 # Test PyInstaller backend

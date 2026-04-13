@@ -10,11 +10,14 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
-use nix::fcntl::{OFlag, open};
+use nix::fcntl::{FcntlArg, OFlag, fcntl, open};
 use nix::sys::signal::{self, Signal};
 use nix::sys::stat::{Mode, fchmod};
 use nix::sys::wait::{WaitStatus, waitpid};
-use nix::unistd::{ForkResult, Pid, dup, fork, pipe, unlink};
+#[cfg(not(target_os = "linux"))]
+use nix::unistd::{ForkResult, Pid, fork, unlink};
+#[cfg(target_os = "linux")]
+use nix::unistd::{ForkResult, Pid, fork, pipe2, unlink};
 use rand::RngCore;
 use snapfzz_seal_core::{error::SealError, types::ExecutionResult};
 
@@ -82,9 +85,9 @@ impl TempFileExecutor {
             drop(temp_file.fd);
 
             let (stdout_read, stdout_write) =
-                pipe().map_err(|err| SealError::Io(std::io::Error::from(err)))?;
+                pipe2(OFlag::O_CLOEXEC).map_err(|err| SealError::Io(std::io::Error::from(err)))?;
             let (stderr_read, stderr_write) =
-                pipe().map_err(|err| SealError::Io(std::io::Error::from(err)))?;
+                pipe2(OFlag::O_CLOEXEC).map_err(|err| SealError::Io(std::io::Error::from(err)))?;
 
             let fork_result = unsafe { fork() }.map_err(fork_error_to_seal)?;
 
@@ -130,7 +133,14 @@ impl TempFileExecutor {
 
                     let wait_status = wait_for_child_exit(child)?;
 
-                    unlink(&temp_path).map_err(|err| SealError::Io(std::io::Error::from(err)))?;
+                    // Child already unlinked the path via exec_path_via_fd; if
+                    // unlink returns ENOENT that is expected and fine.
+                    match unlink(&temp_path) {
+                        Ok(()) | Err(nix::errno::Errno::ENOENT) => {}
+                        Err(err) => {
+                            return Err(SealError::Io(std::io::Error::from(err)));
+                        }
+                    }
 
                     Ok(ExecutionResult {
                         exit_code: extract_exit_code(wait_status),
@@ -164,11 +174,11 @@ impl TempFileExecutor {
             drop(temp_file.fd);
 
             let (stdin_read, stdin_write) =
-                pipe().map_err(|err| SealError::Io(std::io::Error::from(err)))?;
+                pipe2(OFlag::O_CLOEXEC).map_err(|err| SealError::Io(std::io::Error::from(err)))?;
             let (stdout_read, stdout_write) =
-                pipe().map_err(|err| SealError::Io(std::io::Error::from(err)))?;
+                pipe2(OFlag::O_CLOEXEC).map_err(|err| SealError::Io(std::io::Error::from(err)))?;
             let (stderr_read, stderr_write) =
-                pipe().map_err(|err| SealError::Io(std::io::Error::from(err)))?;
+                pipe2(OFlag::O_CLOEXEC).map_err(|err| SealError::Io(std::io::Error::from(err)))?;
 
             let fork_result = unsafe { fork() }.map_err(fork_error_to_seal)?;
 
@@ -407,7 +417,20 @@ fn spawn_lifetime_monitor(
     child_done: Arc<AtomicBool>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        std::thread::sleep(max_lifetime);
+        // Interruptible wait: check child_done every 100ms so relay() returns
+        // promptly when the child exits before max_lifetime elapses.
+        let deadline = std::time::Instant::now() + max_lifetime;
+        loop {
+            if child_done.load(Ordering::Acquire) {
+                return;
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(100)));
+        }
+
         if child_done.load(Ordering::Acquire) {
             return;
         }
@@ -419,7 +442,18 @@ fn spawn_lifetime_monitor(
         );
         let _ = signal::kill(child_pid, Signal::SIGTERM);
 
-        std::thread::sleep(grace_period);
+        let grace_deadline = std::time::Instant::now() + grace_period;
+        loop {
+            if child_done.load(Ordering::Acquire) {
+                return;
+            }
+            let remaining = grace_deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(100)));
+        }
+
         if !child_done.load(Ordering::Acquire) {
             tracing::warn!(
                 "grace period expired ({}s), sending SIGKILL to pid {}",
@@ -438,23 +472,33 @@ fn spawn_heartbeat_monitor(
     child_pid: Pid,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        while !child_done.load(Ordering::Acquire) {
-            std::thread::sleep(timeout);
+        // Interruptible wait: check child_done every 100ms so the thread
+        // exits promptly after the child finishes rather than blocking
+        // relay_with_input for the full timeout duration.
+        let mut next_check = std::time::Instant::now() + timeout;
+        loop {
             if child_done.load(Ordering::Acquire) {
-                break;
+                return;
             }
-
-            let elapsed = match last_stdout.lock() {
-                Ok(instant) => instant.elapsed(),
-                Err(_) => break,
-            };
-
-            if elapsed >= timeout {
-                tracing::warn!(
-                    "interactive heartbeat timeout: no stdout from pid {} for {:?}",
-                    child_pid,
-                    elapsed
-                );
+            let remaining = next_check.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                if child_done.load(Ordering::Acquire) {
+                    return;
+                }
+                let elapsed = match last_stdout.lock() {
+                    Ok(instant) => instant.elapsed(),
+                    Err(_) => return,
+                };
+                if elapsed >= timeout {
+                    tracing::warn!(
+                        "interactive heartbeat timeout: no stdout from pid {} for {:?}",
+                        child_pid,
+                        elapsed
+                    );
+                }
+                next_check = std::time::Instant::now() + timeout;
+            } else {
+                std::thread::sleep(remaining.min(Duration::from_millis(100)));
             }
         }
     })
@@ -502,7 +546,7 @@ fn run_temp_child_exec(temp_path: PathBuf, config: &ExecConfig) -> ! {
     let exec_result = (|| -> Result<(), SealError> {
         let argv = build_argv(config)?;
         let envp = build_envp(config)?;
-        exec_path(&temp_path, &argv, &envp)
+        exec_path_via_fd(&temp_path, &argv, &envp)
     })();
 
     if let Err(err) = exec_result {
@@ -514,25 +558,55 @@ fn run_temp_child_exec(temp_path: PathBuf, config: &ExecConfig) -> ! {
     }
 }
 
-fn exec_path(path: &Path, argv: &[CString], envp: &[CString]) -> Result<(), SealError> {
-    let exec_path = CString::new(path.to_string_lossy().into_owned())
-        .map_err(|err| SealError::InvalidInput(format!("invalid exec path: {err}")))?;
+/// Open the binary at `path`, unlink the path from the directory, then exec
+/// from the open file descriptor via `execveat(AT_EMPTY_PATH)`.
+///
+/// Unlinking before exec means the temp file disappears from `/tmp` (or
+/// `/dev/shm`) before the child process is live on disk — the same
+/// open-unlink-exec idiom used by the memfd backend.  The inode stays alive
+/// until the exec completes (the fd holds the last reference), then the
+/// kernel reclaims it automatically.
+///
+/// On non-Linux platforms we fall back to a plain `execve` (the file stays on
+/// disk, but those platforms are only used for local compile-checks).
+fn exec_path_via_fd(path: &Path, argv: &[CString], envp: &[CString]) -> Result<(), SealError> {
+    #[cfg(target_os = "linux")]
+    {
+        use nix::unistd::fexecve;
 
-    let mut argv_ptrs: Vec<*const nix::libc::c_char> =
-        argv.iter().map(|arg| arg.as_ptr()).collect();
-    argv_ptrs.push(std::ptr::null());
+        let fd = open(path, OFlag::O_RDONLY | OFlag::O_CLOEXEC, Mode::empty())
+            .map_err(|err| SealError::Io(std::io::Error::from(err)))?;
 
-    let mut envp_ptrs: Vec<*const nix::libc::c_char> =
-        envp.iter().map(|entry| entry.as_ptr()).collect();
-    envp_ptrs.push(std::ptr::null());
+        // Remove the path from the directory.  The inode (and its data) is
+        // still reachable via `fd` for the duration of the fexecve call.
+        let _ = unlink(path);
 
-    let rc =
-        unsafe { nix::libc::execve(exec_path.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr()) };
-    if rc == -1 {
-        return Err(SealError::Io(std::io::Error::last_os_error()));
+        fexecve(fd.as_raw_fd(), argv, envp)
+            .map_err(|err| SealError::Io(std::io::Error::from(err)))?;
+        Ok(())
     }
 
-    Ok(())
+    #[cfg(not(target_os = "linux"))]
+    {
+        let exec_path = CString::new(path.to_string_lossy().into_owned())
+            .map_err(|err| SealError::InvalidInput(format!("invalid exec path: {err}")))?;
+
+        let mut argv_ptrs: Vec<*const nix::libc::c_char> =
+            argv.iter().map(|arg| arg.as_ptr()).collect();
+        argv_ptrs.push(std::ptr::null());
+
+        let mut envp_ptrs: Vec<*const nix::libc::c_char> =
+            envp.iter().map(|entry| entry.as_ptr()).collect();
+        envp_ptrs.push(std::ptr::null());
+
+        let rc = unsafe {
+            nix::libc::execve(exec_path.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr())
+        };
+        if rc == -1 {
+            return Err(SealError::Io(std::io::Error::last_os_error()));
+        }
+        Ok(())
+    }
 }
 
 fn create_payload_temp_file(binary_data: &[u8]) -> Result<TempFileArtifact, SealError> {
@@ -544,8 +618,13 @@ fn create_payload_temp_file(binary_data: &[u8]) -> Result<TempFileArtifact, Seal
         .map_err(|err| SealError::Io(std::io::Error::from(err)))?;
 
     {
-        let dup_fd = dup(fd.as_raw_fd()).map_err(|err| SealError::Io(std::io::Error::from(err)))?;
-        let dup_fd = unsafe { OwnedFd::from_raw_fd(dup_fd) };
+        // Use F_DUPFD_CLOEXEC so the write-open dup inherits the close-on-exec
+        // flag atomically.  Plain dup() strips O_CLOEXEC, which means a
+        // concurrent fork (e.g. can_kill_child probe) could inherit this fd and
+        // keep the file open for writing, causing ETXTBSY when we execve it.
+        let dup_raw = fcntl(fd.as_raw_fd(), FcntlArg::F_DUPFD_CLOEXEC(0))
+            .map_err(|err| SealError::Io(std::io::Error::from(err)))?;
+        let dup_fd = unsafe { OwnedFd::from_raw_fd(dup_raw) };
         let mut file = std::fs::File::from(dup_fd);
         if !binary_data.is_empty() {
             file.write_all(binary_data)?;
@@ -942,7 +1021,10 @@ mod tests {
     #[test]
     fn select_temp_base_dir_prefers_dev_shm_or_tmp() {
         let selected = select_temp_base_dir();
-        if Path::new("/dev/shm").is_dir() {
+        // Use dir_allows_exec to mirror the actual function logic: /dev/shm may
+        // exist as a directory but be mounted noexec (e.g. Docker containers),
+        // in which case the function correctly falls back to /tmp.
+        if dir_allows_exec("/dev/shm") {
             assert_eq!(selected, PathBuf::from("/dev/shm"));
         } else {
             assert_eq!(selected, PathBuf::from("/tmp"));
@@ -1030,12 +1112,22 @@ mod tests {
             max_output_bytes: Some(DEFAULT_MAX_OUTPUT_BYTES),
         };
 
-        let before = list_snapfzz_temp_files();
+        let before: std::collections::HashSet<String> =
+            list_snapfzz_temp_files().into_iter().collect();
         let result = executor.execute(&payload, &config).unwrap();
-        let after = list_snapfzz_temp_files();
+        let after: std::collections::HashSet<String> =
+            list_snapfzz_temp_files().into_iter().collect();
 
         assert_eq!(result.exit_code, 0);
-        assert_eq!(before, after);
+        // Check that execute did not leave any NEW temp files behind.
+        // Using a set-difference instead of equality avoids flakiness from
+        // concurrent tests that may create or delete their own temp files
+        // in the same base directory during this test's window.
+        let leaked: Vec<&String> = after.difference(&before).collect();
+        assert!(
+            leaked.is_empty(),
+            "TempFileExecutor leaked temp files: {leaked:?}"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -1046,6 +1138,10 @@ mod tests {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str()
                     && name.starts_with("snapfzz-seal-")
+                    // Exclude audit log files written by concurrent tests
+                    // (e.g. snapfzz-seal-audit-test-{pid}.jsonl); only count
+                    // payload temp files which have no extension.
+                    && !name.contains('.')
                 {
                     names.push(name.to_string());
                 }
